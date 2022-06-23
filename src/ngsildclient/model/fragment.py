@@ -138,7 +138,7 @@ class Fragment():
     >>> e.rm("NO2.accuracy")
     """
 
-    def __init__(self, payload: dict = {}, copy = False):
+    def __init__(self, payload: dict = {}, shallow = True):
         """Create a NGSI-LD entity from a dictionary.
 
         The input dictionary must at least contain the 'id', 'type' and '@context'.
@@ -158,7 +158,7 @@ class Fragment():
         self._anchored: bool = False
 
         if isinstance(payload, NgsiDict):
-            self._payload = deepcopy(payload) if copy else payload
+            self._payload = payload if shallow else deepcopy(payload)
         else:
             self._payload = NgsiDict(payload)
 
@@ -242,7 +242,9 @@ class Fragment():
             # raise ValueError("Item should be a list")
             self[name] = [item]
         if isinstance(value, Fragment):
-            value = value._payload
+            value = value.to_dict()
+        elif isinstance(value, NgsiDict):
+            value = value.toDict()
         self[name].append(value)
 
     def jsonpath(self, path: str) -> Fragment:
@@ -583,7 +585,7 @@ class Fragment():
         NgsiDict
             The underlying native Python dictionary
         """
-        return self._payload
+        return self._payload.toDict()
 
     def to_json(self, withroot=False, *args, **kwargs) -> str:
         """Returns the entity as JSON.

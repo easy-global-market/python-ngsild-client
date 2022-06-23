@@ -169,6 +169,9 @@ class Fragment():
     def hasroot(self) -> bool:
         return "type" not in self._payload.keys()
 
+    def root(self) -> str:
+        return [*self._payload.keys()][0]
+
     @classmethod
     def from_dict(cls, payload: dict):
         """Create a NGSI-LD entity from a dictionary.
@@ -236,16 +239,62 @@ class Fragment():
             self._payload |= other
         return self
 
-    def append(self, name: str, value: Fragment):
-        item = self[name]
-        if not isinstance(item, List):
-            # raise ValueError("Item should be a list")
-            self[name] = [item]
+    def set(self, value: Fragment = None, *, attr: str = None):
+        if attr is None:
+            if value is None or not value.hasroot():
+                raise ValueError("value must have a root attribute")
+            attr = value.root()
+            value = value[attr]
         if isinstance(value, Fragment):
-            value = value.to_dict()
-        elif isinstance(value, NgsiDict):
-            value = value.toDict()
-        self[name].append(value)
+            value = value._payload
+        self[attr] = value
+
+    # def append(self, value: Fragment = None, /, attr: str = None):
+    #     if attr is None:
+    #         if value is None or not value.hasroot():
+    #             raise ValueError("value must have a root attribute")
+    #         attr = value.root()
+    #         value = value[attr]
+    #     try:
+    #         item = self[attr]
+    #     except KeyError:
+    #         self[attr] = [value]
+    #         return
+    #     if not isinstance(item, List):
+    #         self[attr] = [item]
+    #     if isinstance(value, Fragment):
+    #         value = value._payload
+    #         # value = value.to_dict()
+    #     # elif isinstance(value, NgsiDict):
+    #     #     value = value.toDict()
+    #     self[attr].append(value)
+
+    def _append(self, value: Fragment, attr: str = None):
+        if attr is None:
+            if value is None or not value.hasroot():
+                raise ValueError("Value must have a root attribute")
+            attr = value.root()
+            value = value[attr]
+        else:
+            if value is not None and value.hasroot():
+                raise ValueError("Value already has a root attribute")
+        try:
+            item = self[attr]
+        except KeyError:
+            self[attr] = [value]
+            return
+        if not isinstance(item, List):
+            self[attr] = [item]
+        if isinstance(value, Fragment):
+            value = value._payload
+            # value = value.to_dict()
+        # elif isinstance(value, NgsiDict):
+        #     value = value.toDict()
+        self[attr].append(value)
+
+    def append(self, *values, attr: str = None):
+        for v in values:
+            self._append(v, attr)
 
     def jsonpath(self, path: str) -> Fragment:
         return self._payload._jsonpath(path)

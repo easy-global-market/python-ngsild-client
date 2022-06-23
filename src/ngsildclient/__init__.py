@@ -13,11 +13,12 @@ import http.client
 import logging
 import sys
 
-__version__ = "0.1.11"
+__version__ = "0.2.0"
 
 from .utils import iso8601, is_interactive
 from .utils.uuid import shortuuid
 from .model.entity import Entity
+from .model.fragment import Fragment
 from .model.helper.postal import PostalAddressBuilder
 from .model.helper.openinghours import OpeningHoursBuilder
 from .model.constants import (
@@ -43,6 +44,7 @@ __all__ = [
     "iso8601",
     "shortuuid",
     "Entity",
+    "Fragment",
     "PostalAddressBuilder",
     "OpeningHoursBuilder",
     "CORE_CONTEXT",

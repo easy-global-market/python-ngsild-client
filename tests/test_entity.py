@@ -71,7 +71,6 @@ def test_air_quality(expected_air_quality):
     e.prop("NO2", 22, unitcode="GP")
     e.rel("refPointOfInterest", "PointOfInterest:RZ:MainSquare")
     assert e.to_dict() == expected_air_quality
-    assert e.to_dict(kv=True) == expected_dict("air_quality.kv")
 
 
 def test_air_quality_from_dict(expected_air_quality):
@@ -192,7 +191,6 @@ def test_store():
     e.gprop("location", (-20.2845607, 57.4874121))
     e.prop("storeName", "Checker Market")
     assert e.to_dict() == expected_dict("store")
-    assert e.to_dict(kv=True) == expected_dict("store.kv")
 
 
 def test_vehicle():
@@ -219,7 +217,6 @@ def test_vehicle():
         observedat=datetime(2017, 7, 29, 12, 0, 4, tzinfo=timezone.utc),
     ).rel("providedBy", "Person:Bob", NESTED)
     assert e.to_dict() == expected_dict("vehicle")
-    assert json.loads(e.to_json(kv=True)) == expected_dict("vehicle.kv")
 
 
 def test_vehicle_multiple_attribute():
@@ -272,22 +269,3 @@ def test_parking():
     e.prop("totalSpotNumber", 200)
     e.gprop("location", (41.2, -8.5))
     assert e.to_dict() == expected_dict("parking")
-    assert e.to_dict(kv=True) == expected_dict("parking.kv")
-
-
-def test_cached_datetime_in_observedat():
-    e = Entity("AirQualityObserved", "AirQualityObserved:RZ:Obsv4567")
-    e.tprop("dateObserved", datetime(2018, 8, 7, 12, tzinfo=timezone.utc))  # cache the datetime
-    e.prop(
-        "NO2", 22, unitcode="GP", observedat=Auto
-    )  # reuse the datetime set by the previous tprop() call
-    e.rel("refPointOfInterest", "PointOfInterest:RZ:MainSquare")
-    assert e["NO2.observedAt"] == "2018-08-07T12:00:00Z"
-
-
-def test_cached_datetime_in_prop():
-    e = Entity(
-        "AirQualityObserved", "AirQualityObserved:RZ:2018-08-07T12:00:00Z"
-    )  # cache the datetime
-    e.obs()  # dateObserved that uses the cached datetime (the one extracted from the entity identifier)
-    assert e["dateObserved.value.@value"] == "2018-08-07T12:00:00Z"

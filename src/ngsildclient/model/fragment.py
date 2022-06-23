@@ -17,13 +17,12 @@ from copy import deepcopy
 from functools import partialmethod
 
 from datetime import datetime
-from typing import overload, Any, Union, List, Optional, Callable
+from typing import Any, Union, List
+from dotmap import DotMap
 
 from .exceptions import *
 from .constants import *
 from .ngsidict import NgsiDict
-from ngsildclient.utils import iso8601, url, is_interactive
-from ngsildclient.utils.urn import Urn
 
 from . import globalsettings
 
@@ -72,7 +71,7 @@ class Fragment:
     - save the entity to a file
     - send it to the NGSI-LD Context Broker for creation/update (use the ngsildclient.api package)
 
-    A NGSI-LD entity is backed by a NgsiDict object (a custom dictionary that inherits from the native Python dict).
+    A NGSI-LD entity is backed by a NgsgiDict object (a custom dictionary that inherits from the native Python dict).
     So if for any reasons you're stuck with the library and cannot achieve to build a NGSI-LD entity
     that fully matches your target datamodel, it's always possible to manipulate directly the underlying dictionary.
 
@@ -98,19 +97,13 @@ class Fragment:
     >>> # Create the entity
     >>> e = Entity("AirQualityObserved", "RZ:Obsv4567")
 
-    >>> # Add a temporal property named dateObserved
-    >>> # We could provide a string if preferred (rather than a datetime)
-    >>> e.tprop("dateObserved", datetime(2018, 8, 7, 12))
 
     >>> # Add a property named NO2 with a pollutant concentration value and a metadata to indicate the unit (mg/m3)
     >>> # The accuracy property is nested
     >>> e.prop("NO2", 22, unitcode="GP", observedat=Auto).prop("accuracy", 0.95, NESTED)
 
     >>> # Add a relationship towards a POI NGSI-LD Entity
-    >>> e.rel("refPointOfInterest", "PointOfInterest:RZ:MainSquare")
-
-    >>> # Pretty-print to standard output
-    >>> e.pprint()Entityre-context.jsonld"
+    >>> e.rel("refPointOfInterest", "Pogld"
         ],
         "id": "urn:ngsi-ld:AirQualityObserved:RZ:Obsv4567",
         "type": "AirQualityObserved",
@@ -164,12 +157,36 @@ class Fragment:
             The result Entity instance
         """
         self.root = root
+        self._lastprop: NgsiDict = None
+        self._anchored: bool = False
+
         if isinstance(payload, NgsiDict):
             self._payload = payload
         else:
             self._payload = NgsiDict(payload)
-            self._lastprop: NgsiDict = None
-            self._anchored: bool = False
+
+    @property
+    def dotmap(self) -> DotMap:
+        return self._payload
+
+    @classmethod
+    def from_dict(cls, payload: dict):
+        """Create a NGSI-LD entity from a dictionary.
+
+        The input dictionary must at least contain the 'id', 'type' and '@context'.
+        This method assumes that the input dictionary matches a valid NGSI-LD structure.
+
+        Parameters
+        ----------
+        payload : dict
+            The given dictionary.
+
+        Returns
+        -------
+        Entity
+            The result Entity instance
+        """
+        return cls(payload=payload)
 
     @classmethod
     def duplicate(cls, fragment: Fragment) -> Fragment:
@@ -198,28 +215,43 @@ class Fragment:
         """
         return Fragment.duplicate(self)
 
-    def __getitem__(self, item):
-        return self._jsonpath(item)
+    def __getitem__(self, key):
+        return self._payload[key]
 
-    def __setitem__(self, key, item):
-        self._payload.__setitem__(key, item)
+    def __setitem__(self, key, value):
+        self._payload[key] = value
 
     def __delitem__(self, key):
-        self._payload.__delitem__(key)
-        return self
+        del self._payload[key]
 
-    def _jsonpath(self, path: str) -> Fragment:
-        res = self._payload.jsonpath(path)
-        return Fragment(res) if isinstance(res, dict) else res
+    def append(self, name: str, value: Fragment):
+        item = self[name]
+        if not isinstance(item, List):
+            raise ValueError("Item should be a list")
+        if isinstance(value, Fragment):
+            value = value.to_dict()
+        elif isinstance(value, NgsiDict):
+            value = value.toDict()
+        item.append(value)
+        return deepcopy(item[-1])
 
-    def get_fragment(self, key: str):
-        payload = self._payload.__getitem__(key)
-        root = {}
-        d = root
-        for k in key.split("."):
-            d[k] = {}
-            d = d[k]
-        return Fragment(payload, root)
+    def arrayify(self, name: str) -> NgsiDict:
+        prop = self[name]
+        if isinstance(prop, List):
+            return None
+        self[name] = [prop]
+        return deepcopy(prop)
+
+    def unarrayify(self, name: str) -> NgsiDict:
+        prop = self[name]
+        if not isinstance(prop, List):
+            return None
+        lastprop = prop[-1]
+        self[name] = lastprop
+        return lastprop
+
+    def jsonpath(self, path: str) -> Fragment:
+        return self._payload._jsonpath(path)
 
     def anchor(self):
         """Set an anchor.
@@ -467,8 +499,6 @@ class Fragment:
             }
         }
         """
-        if value is None:
-            value = self._payload._dtcached
         property = self._payload._build_temporal_property(value)
         self._update(name, property, nested)
         return self
@@ -558,7 +588,7 @@ class Fragment:
         NgsiDict
             The underlying native Python dictionary
         """
-        return self._payload
+        return self._payload.toDict()
 
     def to_json(self, withroot=False, *args, **kwargs) -> str:
         """Returns the entity as JSON.

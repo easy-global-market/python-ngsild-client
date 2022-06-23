@@ -27,3 +27,6 @@ class Settings:
     strict: bool = False  # for future use
     autoescape: bool = True  # for future use
     f_print: Callable = print_json if is_interactive() else print
+
+
+globalsettings = Settings()

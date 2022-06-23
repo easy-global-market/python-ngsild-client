@@ -12,9 +12,11 @@
 from __future__ import annotations
 
 from typing import Any, Union, List
-from functools import reduce
 from datetime import datetime
 from geojson import Point, LineString, Polygon, MultiPoint
+from copy import deepcopy
+from jsonpath import JSONPath
+from dotmap import DotMap
 
 import ngsildclient.model.entity as entity
 from ..utils import iso8601, url
@@ -23,13 +25,12 @@ from .constants import *
 from .exceptions import *
 
 import json
-import operator
 
 """This module contains the definition of the NgsiDict class.
 """
 
 
-class NgsiDict(dict):
+class NgsiDict(DotMap):
     """This class is a custom dictionary that backs an entity.
 
     NgsiDict is used to build and hold the entity properties, as well as the entity's root.
@@ -41,47 +42,25 @@ class NgsiDict(dict):
     model.Entity
     """
 
-    def __init__(self, *args, dtcached: datetime = None, **kwargs):
+    def __init__(self, *args, **kwargs):
+        kwargs["_dynamic"] = False
         super().__init__(*args, **kwargs)
-        self._dtcached: datetime = dtcached if dtcached else iso8601.utcnow()
 
     @classmethod
     def _from_json(cls, payload: str):
         d = json.loads(payload)
         return cls(d)
 
-    def _cachedate(self, dt: datetime):
-        self._dtcached = dt
-
-    def _dateauto(self):
-        if self._dtcached is None:
-            self._dtcached = iso8601.utcnow()
-        return self._dtcached
-
-    def __getitem__(self, element: str):
-        return reduce(dict.__getitem__, element.split("."), self)
-
-    def __delitem__(self, element: str):
-        try:
-            nested, k = element.rsplit(".", 1)
-        except ValueError:
-            dict.__delitem__(self, element)
-        else:
-            dict.__delitem__(self[nested], k)
-
-    def __setitem__(self, key: str, value: Any):
-        try:
-            nested, k = key.rsplit(".", 1)
-        except ValueError:
-            dict.__setitem__(self, key, value)
-        else:
-            dict.__setitem__(self[nested], k, value)
-
     @classmethod
     def _load(cls, filename: str):
         with open(filename, "r") as fp:
             d = json.load(fp)
             return cls(d)
+
+    def _to_fragment(self):
+        from .fragment import Fragment
+
+        return Fragment(deepcopy(self))
 
     def to_json(self, indent=None) -> str:
         """Returns the dict in json format"""
@@ -95,13 +74,17 @@ class NgsiDict(dict):
         with open(filename, "w") as fp:
             json.dump(self, fp, default=str, ensure_ascii=False, indent=indent)
 
+    def _jsonpath(self, path: str):
+        res = JSONPath(path).parse(self)
+        print(res)
+        if isinstance(res, List) and res:
+            return res[0]
+        return None
+
     def _process_observedat(self, observedat):
-        if observedat is Auto:
-            observedat = self._dateauto()
         date_str, temporaltype, dt = iso8601.parse(observedat)
         if temporaltype != TemporalType.DATETIME:
             raise NgsiDateFormatError(f"observedAt must be a DateTime : {date_str}")
-        self._cachedate(dt)
         return date_str
 
     def _build_property(
@@ -166,16 +149,12 @@ class NgsiDict(dict):
         property: NgsiDict = NgsiDict()
         property["type"] = AttrType.TEMPORAL.value  # set type
 
-        if value is Auto:
-            value = self._dateauto()
-
         date_str, temporaltype, dt = iso8601.parse(value)
         v = {
             "@type": temporaltype.value,
             "@value": date_str,
         }
         property["value"] = v  # set value
-        self._cachedate(dt)
         return property
 
     def tprop(self, name: str, value: str, **kwargs):

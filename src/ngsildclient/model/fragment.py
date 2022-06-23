@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 """
 
 
-class Fragment:
+class Fragment():
     """The main goal of this class is to build, manipulate and represent a NGSI-LD compliant entity.
 
     The preferred constructor allows to create an entity from its NGSI-LD type and identifier (and optionally context),
@@ -123,7 +123,7 @@ class Fragment:
             }
         },
         "refPointOfInterest": {
-            "type": "Relationship",
+            "type": "Relationship",False
             "object": "urn:ngsi-ld:PointOfInterest:RZ:MainSquare"
         }
     }
@@ -138,7 +138,7 @@ class Fragment:
     >>> e.rm("NO2.accuracy")
     """
 
-    def __init__(self, payload: dict = {}, root: dict = {}):
+    def __init__(self, payload: dict = {}, copy = False):
         """Create a NGSI-LD entity from a dictionary.
 
         The input dictionary must at least contain the 'id', 'type' and '@context'.
@@ -154,12 +154,11 @@ class Fragment:
         Entity
             The result Entity instance
         """
-        self.root = root
         self._lastprop: NgsiDict = None
         self._anchored: bool = False
 
         if isinstance(payload, NgsiDict):
-            self._payload = payload
+            self._payload = deepcopy(payload) if copy else payload
         else:
             self._payload = NgsiDict(payload)
 
@@ -243,9 +242,7 @@ class Fragment:
             # raise ValueError("Item should be a list")
             self[name] = [item]
         if isinstance(value, Fragment):
-            value = value.to_dict()
-        elif isinstance(value, NgsiDict):
-            value = value.toDict()
+            value = value._payload
         self[name].append(value)
 
     def jsonpath(self, path: str) -> Fragment:
@@ -586,7 +583,7 @@ class Fragment:
         NgsiDict
             The underlying native Python dictionary
         """
-        return self._payload.toDict()
+        return self._payload
 
     def to_json(self, withroot=False, *args, **kwargs) -> str:
         """Returns the entity as JSON.

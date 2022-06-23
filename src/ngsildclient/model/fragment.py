@@ -227,28 +227,13 @@ class Fragment:
     def append(self, name: str, value: Fragment):
         item = self[name]
         if not isinstance(item, List):
-            raise ValueError("Item should be a list")
+            # raise ValueError("Item should be a list")
+            self[name] = [item]
         if isinstance(value, Fragment):
             value = value.to_dict()
         elif isinstance(value, NgsiDict):
             value = value.toDict()
-        item.append(value)
-        return deepcopy(item[-1])
-
-    def arrayify(self, name: str) -> NgsiDict:
-        prop = self[name]
-        if isinstance(prop, List):
-            return None
-        self[name] = [prop]
-        return deepcopy(prop)
-
-    def unarrayify(self, name: str) -> NgsiDict:
-        prop = self[name]
-        if not isinstance(prop, List):
-            return None
-        lastprop = prop[-1]
-        self[name] = lastprop
-        return lastprop
+        self[name].append(value)
 
     def jsonpath(self, path: str) -> Fragment:
         return self._payload._jsonpath(path)

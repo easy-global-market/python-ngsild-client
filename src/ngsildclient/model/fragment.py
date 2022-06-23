@@ -24,8 +24,6 @@ from .exceptions import *
 from .constants import *
 from .ngsidict import NgsiDict
 
-from . import globalsettings
-
 logger = logging.getLogger(__name__)
 
 """This module contains the definition of the Entity class.
@@ -169,6 +167,9 @@ class Fragment:
     def dotmap(self) -> DotMap:
         return self._payload
 
+    def hasroot(self) -> bool:
+        return "type" not in self._payload.keys()
+
     @classmethod
     def from_dict(cls, payload: dict):
         """Create a NGSI-LD entity from a dictionary.
@@ -223,6 +224,18 @@ class Fragment:
 
     def __delitem__(self, key):
         del self._payload[key]
+
+    def __or__(self, other):
+        if isinstance(other, Fragment) and other.hasroot():
+            return self._payload | other._payload
+        return self
+
+    def __ior__(self, other):
+        if isinstance(other, Fragment) and other.hasroot():
+            self._payload |= other._payload
+        elif isinstance(other, dict):
+            self._payload |= other
+        return self
 
     def append(self, name: str, value: Fragment):
         item = self[name]
@@ -310,7 +323,7 @@ class Fragment:
                 self._lastprop = property
         else:
             self._lastprop = self._payload[attrname] = property
-
+       
     def prop(
         self,
         name: str,
@@ -588,15 +601,9 @@ class Fragment:
         str
             The JSON content
         """
-        if withroot:
-            rootcopy = deepcopy(self.root)
-            r = rootcopy
-            while k := [*r.keys()]:
-                r = r[k[0]]
-            r
         return self._payload.to_json(*args, **kwargs)
 
-    def pprint(self, withroot=False, *args, **kwargs):
+    def pprint(self, *args, **kwargs):
         """Pretty-print the entity to the standard ouput.
 
         Parameters
@@ -604,4 +611,4 @@ class Fragment:
         kv : bool, optional
             KeyValues format (aka simplified representation), by default False
         """
-        globalsettings.f_print(self.to_json(indent=2, *args, **kwargs))
+        return self._payload.pprint(*args, **kwargs)

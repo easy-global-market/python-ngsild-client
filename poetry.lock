@@ -1,12 +1,4 @@
 [[package]]
-name = "addict"
-version = "2.4.0"
-description = "Addict is a dictionary whose items can be set using both attribute and item syntax."
-category = "main"
-optional = false
-python-versions = "*"
-
-[[package]]
 name = "alabaster"
 version = "0.7.12"
 description = "A configurable sidebar-enabled Sphinx theme"
@@ -671,13 +663,9 @@ python-versions = "*"
 [metadata]
 lock-version = "1.1"
 python-versions = "^3.9"
-content-hash = "70f0a98eb9d602ff30708d4f0e361e9d7751269baa94525a2f7b59ed886f55cc"
+content-hash = "a3832cca2a272588184e518bd0611e2a9719ad58147ccbb09abee873b0497df9"
 
 [metadata.files]
-addict = [
-    {file = "addict-2.4.0-py3-none-any.whl", hash = "sha256:249bb56bbfd3cdc2a004ea0ff4c2b6ddc84d53bc2194761636eb314d5cfa5dfc"},
-    {file = "addict-2.4.0.tar.gz", hash = "sha256:b3b2210e0e067a281f5646c8c5db92e99b7231ea8b0eb5f74dbdf9e259d4e494"},
-]
 alabaster = [
     {file = "alabaster-0.7.12-py2.py3-none-any.whl", hash = "sha256:446438bdcca0e05bd45ea2de1668c1d9b032e1a9154c2c259092d77031ddd359"},
     {file = "alabaster-0.7.12.tar.gz", hash = "sha256:a661d72d58e6ea8a57f7a86e37d86716863ee5e92788398526d58b26a4e4dc02"},

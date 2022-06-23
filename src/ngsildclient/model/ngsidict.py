@@ -19,6 +19,7 @@ from jsonpath import JSONPath
 from dotmap import DotMap
 
 import ngsildclient.model.entity as entity
+from . import globalsettings
 from ..utils import iso8601, url
 from ..utils.urn import Urn
 from .constants import *
@@ -57,7 +58,12 @@ class NgsiDict(DotMap):
             d = json.load(fp)
             return cls(d)
 
-    def _to_fragment(self):
+    def as_fragment(self):
+        from .fragment import Fragment
+        
+        return Fragment(self)
+
+    def new_fragment(self):
         from .fragment import Fragment
 
         return Fragment(deepcopy(self))
@@ -68,7 +74,7 @@ class NgsiDict(DotMap):
 
     def pprint(self, *args, **kwargs) -> None:
         """Returns the dict pretty-json-formatted"""
-        print(self.to_json(indent=2, *args, **kwargs))
+        globalsettings.f_print(self.to_json(indent=2, *args, **kwargs))
 
     def _save(self, filename: str, indent=2):
         with open(filename, "w") as fp:

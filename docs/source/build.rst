@@ -462,6 +462,43 @@ The Relationship Property points to one *or many* JSON-LD objects.
       }
    }
 
+Alternatively you could pass the related entity instead of its id, or even arrays of these latter.
+
+.. code-block::
+   :emphasize-lines: 4
+   :caption: Relationship using an existing entity
+
+   from ngsildclient import Entity
+
+   p1 = Entity("Parking", "OffStreetParking:Downtown1")
+
+   entity = Entity("Vehicle", "A4567")
+   entity.rel("isParked", p1)
+
+.. code-block::
+   :emphasize-lines: 4
+   :caption: Relationship using an array
+
+   from ngsildclient import Entity
+
+   p1 = Entity("Parking", "OffStreetParking:Downtown1")
+   p2 = Entity("Parking", "OffStreetParking:Downtown2")
+
+   entity = Entity("Vehicle", "A4567")
+   entity.rel("isParked", [p1, p2])
+
+.. code-block::
+   :emphasize-lines: 4
+   :caption: Relationship using an array with some metadata
+
+   from ngsildclient import Entity
+
+   p1 = Entity("Parking", "OffStreetParking:Downtown1")
+   p2 = Entity("Parking", "OffStreetParking:Downtown2")
+
+   entity = Entity("Vehicle", "A4567")
+   entity.rel("isParked", [p1, p2], observedat=["2017-07-29T12:00:04Z", "2017-07-30T15:05:00Z"])   
+
 Import the **Rel** Enum to access well-known relationship names, such as ``observedBy`` or ``hasPart``.
 
 Implement nested properties
@@ -625,7 +662,7 @@ Update an entity
 It provides obviously all the native dictionary staff but also :
 
 - the **prop()**, **gprop()**, **tprop()** and **rel()** primitives quite equivalent to those provided by the Entity
-- a dot notation to access fields, i.e. `room["temperature.value"]`
+- a dot notation facility to navigate the entity and benefit from autocompletion
 
 Let's consider the following example.
 
@@ -671,7 +708,7 @@ Update a value
 
    from ngsildclient import Entity
 
-   room["temperature.value"] += 0.2
+   room"temperature"]["value"] += 0.2
 
 Add metadata or userdata
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -679,10 +716,20 @@ Add metadata or userdata
 Use the same method.
 
 .. code-block::
+   :caption: Dictionary-based method
 
    from ngsildclient import Entity
 
-   room["temperature.unitCode"] = "CEL"
+   room["temperature']["unitCode"] = "CEL"
+
+Alternatively one can use the **dotmap** keyword to navigate the entity.
+
+.. code-block::
+   :caption: Autocompletion-friendly method
+
+   from ngsildclient import Entity
+
+   room.dotmap.temperature.unitCode = "CEL"
 
 Remove any part of the Entity
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -693,7 +740,7 @@ It applies to properties as well.
 
    from ngsildclient import Entity
 
-   del room["temperature.unitCode"]
+   del room.dotmap.temperature.unitCode
 
 Update a property
 ~~~~~~~~~~~~~~~~~
@@ -709,28 +756,170 @@ To update an Entity's property the easiest way is to override it.
 Add a nested property
 ~~~~~~~~~~~~~~~~~~~~~
 
-| We can add a nested property without rebuilding the upper property.
-| Here we nest a qc property into the temperature property.
+| Here we want to nest a sub-property inside an existing upper property.
+| We instanciate a **Fragment** to make the **prop()** methods available on the underlying dictionary.
 
 .. code-block::
 
    from ngsildclient import Entity
 
-   room["temperature"].prop("qc", "checked")
+   f = Fragment(room.dotmap.temperature)
+   f.prop("qc", "checked")
 
 Add a multilevel nested property
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 | Here we nest a status property into a qc property, itself nested into the temperature property.
-| Note that chaining the **prop()** automatically enables nesting.
-| The **prop()** method used here does not belong to the Entity but to the NGSI-dedicated dictionary.
 
 .. code-block::
 
    from ngsildclient import Entity
 
-   room["temperature"].prop("qc", "checked").prop("status", "discarded")
+   f = Fragment(room.dotmap.temperature)
+   f.prop("qc", "checked").prop("status", "discarded", NESTED)
 
+Same thing can be achieved in this way.
+
+.. code-block::
+   :caption: Alternative
+
+   from ngsildclient import Entity
+
+   f = Fragment(room.dotmap.temperature.qc)
+   f.prop("status", "discarded")
+
+Multi-Attribute support
+-----------------------
+
+| "There can be Attributes that simultaneously have more than one instance" *(ETSI specifications)*
+| Let's consider the following entity from the documentation.
+| Next we'll see two methods to generate such an entity.
+
+.. code-block:: json-ld
+
+   {
+      "@context": [
+         "https://uri.etsi.org/ngsi-ld/v1/ngsi-ld-core-context.jsonld"
+      ],
+      "id": "urn:ngsi-ld:Vehicle:A4567",
+      "type": "Vehicle",
+      "brandName": {
+         "type": "Property",
+         "value": "Mercedes"
+      },
+      "speed": [
+         {
+            "type": "Property",
+            "value": 55,
+            "datasetId": "urn:ngsi-ld:Property:speedometerA4567-speed",
+            "source": {
+            "type": "Property",
+            "value": "Speedometer"
+            }
+         },
+         {
+            "type": "Property",
+            "value": 44.5,
+            "datasetId": "urn:ngsi-ld:Property:gpsA4567-speed",
+            "source": {
+            "type": "Property",
+            "value": "GPS"
+            }
+         }
+      ]
+   }
+
+Build a multiple-attribute
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block::
+   :emphasize-lines: 6
+   :caption: Build a multiple-attribute
+
+   from ngsildclient import *
+
+   e = Entity("Vehicle", "A4567").prop("brandName", "Mercedes")
+   speed1 = Fragment().prop("speed", 55, datasetid="Property:speedometerA4567-speed").prop("source", "Speedometer", NESTED)
+   speed2 = Fragment().prop("speed", 44.5, datasetid="Property:gpsA4567-speed").prop("source", "GPS", NESTED)
+   # both speed1 and speed2 backing dicts contain "speed" as a root key
+   e.append(speed1, speed2)
+
+Transform a single-attribute into a multiple-attribute
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Can be useful when a single-attribute is already present.
+
+.. code-block::
+   :emphasize-lines: 10, 18
+   :caption: Build a multiple-attribute from an existing single-attribute
+
+   from ngsildclient import *
+   from ngsildclient.utils.urn import Urn
+
+   e = Entity("Vehicle", "A4567").prop("brandName", "Mercedes")
+
+   # the (already here) single-attribute
+   e.prop("speed", 55, datasetid="Property:speedometerA4567-speed").prop("source", "Speedometer", NESTED)
+   
+   # get a copy
+   speed2 = Fragment(e.dotmap.speed, shallow=False)
+
+   # update according to your needs
+   speed2.dotmap.value = 44.5
+   speed2.dotmap.source.value = "GPS"
+   speed2.dotmap.datasetId = Urn.prefix("Property:gpsA4567-speed")
+
+   # the backing dict doesn't contain any root key
+   # so we have to specify it using the attr argument
+   e.append(speed2, attr="speed")
+
+Multiple-Relationship
+~~~~~~~~~~~~~~~~~~~~~
+
+| The Multiple-Attribute support can be useful to build multiple-relationships.
+| Especially for complicated ones.
+
+.. code-block::
+   :caption: Build multiple-relationship
+
+   from ngsildclient import *
+
+   e = Entity("Vehicle", "A4567").prop("brandName", "Mercedes")
+   r_parked = [Fragment().rel("isParked", f"OffStreetParking:Downtown{i}", datasetid=f"datasource{i}") for i in range(5, 8)]
+   e.append(*r_parked)
+
+This results in the following entity.
+
+.. code-block:: json-ld
+
+   {
+      "@context": [
+         "https://uri.etsi.org/ngsi-ld/v1/ngsi-ld-core-context.jsonld"
+      ],
+      "id": "urn:ngsi-ld:Vehicle:A4567",
+      "type": "Vehicle",
+      "brandName": {
+         "type": "Property",
+         "value": "Mercedes"
+      },
+      "isParked": [
+         {
+            "type": "Relationship",
+            "object": "urn:ngsi-ld:OffStreetParking:Downtown5",
+            "datasetId": "urn:ngsi-ld:datasource5"
+         },
+         {
+            "type": "Relationship",
+            "object": "urn:ngsi-ld:OffStreetParking:Downtown6",
+            "datasetId": "urn:ngsi-ld:datasource6"
+         },
+         {
+            "type": "Relationship",
+            "object": "urn:ngsi-ld:OffStreetParking:Downtown7",
+            "datasetId": "urn:ngsi-ld:datasource7"
+         }
+      ]
+   }
 
 Display an entity
 -----------------
@@ -1073,7 +1262,7 @@ It's up to you to implement your custom mocking logic by providing your own ``f_
 
    def randomize_NO2(entity: Entity):
       entity.prop("mocked", True)
-      entity["NO2.value"] += random.uniform(-3.0, 3.0)
+      entity.dotmap.NO2.value += random.uniform(-3.0, 3.0)
 
    # generate 100 mocked entities
    mocker = MockerNgsi(f_mock_payload=randomize_NO2)

@@ -8,6 +8,8 @@ Welcome to the **ngsildclient** documentation, where you can learn about ngsildc
 | NGSI-LD_ has been standardized by the ETSI_ and is widely used in the Fiware_ ecosystem.
 | **ngsildclient** is based on the NGSI-LD API ETSI Specification [ETSI_GS_CIM_009_V1.5.1]_.
 
+| Version 0.2.0 introduced breaking changes.
+| Documentation for older 0.1.x versions is available `here <https://ngsildclient.readthedocs.io/en/v0.1.9/index.html>`_.
 
 Project Goals
 -------------
@@ -53,4 +55,3 @@ Indices and tables
 .. _ETSI: https://www.etsi.org/
 .. _Fiware: https://www.fiware.org
 .. _specifications: https://www.etsi.org/committee/cim
-

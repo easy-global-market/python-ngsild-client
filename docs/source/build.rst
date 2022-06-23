@@ -233,24 +233,6 @@ observedAt
    # Alternatively one could pass directly an ISO8601 string
    # entity.prop("SO2", 11, observedat="2016-03-15T11:00:00Z")
 
-| Often an observation date is the same that is used in the entity identifier to make it unique.
-| And often the whole set of measures share the same observation date.
-| The library caches the first datetime it encounters and allows to reuse it.
-
-For the sake of example let's rewrite our entity.
-
-.. code-block::
-  :caption: Example
-
-   from ngsildclient import Entity, Auto
-
-   entity = Entity("AirQualityObserved", "Madrid-28079004-2016-03-15T11:00:00Z")
-   entity.prop("CO", 500, unitcode="GP", observedat=Auto)
-   entity.prop("NO", 45, unitcode="GP", observedat=Auto)
-   entity.prop("NO2", 69, unitcode="GP", observedat=Auto)
-   entity.prop("SO2", 11, unitcode="GP", observedat=Auto)
-
-
 .. code-block:: json-ld
    :caption: AirQualityObserved NGSI-LD Entity with all measures
    
@@ -408,22 +390,6 @@ The Temporal Property accepts values of following types : **datetime**, **date**
    entity = Entity("AirQualityObserved", "Madrid-28079004-2016-03-15T11:00:00Z")
    entity.tprop("dateObserved", "2016-03-15T11:00:00Z")
 
-| In the above example the library has cached *at the entity creation time* the datetime that is part of the identifier.
-| The **Auto** directive can be used to benefit from the cached datetime.
-
-.. code-block::
-  :caption: Temporal Property using the Auto keyword
-  :emphasize-lines: 4
-
-   from ngsildclient import Entity, Auto
-
-   entity = Entity("AirQualityObserved", "Madrid-28079004-2016-03-15T11:00:00Z")
-   entity.tprop("dateObserved", Auto)  # We could omit Auto as it's the default
-
-.. note::
-   | ``Auto`` means the cached datetime if any else defaults to the current datetime ``utcnow()``.
-   | ``Auto`` is the default value for the **tprop()** primitive.
-
 The **obs()** alias can be used to set this very common **dateObserved** Temporal Property.
 
 | The library will always convert datetimes to UTC as expected by NGSI-LD.
@@ -431,7 +397,7 @@ The **obs()** alias can be used to set this very common **dateObserved** Tempora
 
 .. code-block::
 
-   entity.obs() # use a cached datetime if any, else current datetime
+   entity.obs() # use current datetime if not specified
 
 Relationship
 ~~~~~~~~~~~~
@@ -925,10 +891,7 @@ Display an entity
 -----------------
 
 | The **to_json()** method returns the JSON payload as a string.
-| By setting the **kv** argument to True, it returns the simplified representation aka **KeyValues** format.
-
 | The **pprint()** method relies on **to_json()** in order to pretty-print the entity.
-| It also takes a **kv** argument.
 
 Import/Export
 -------------

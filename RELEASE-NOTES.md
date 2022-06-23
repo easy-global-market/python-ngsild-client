@@ -1,8 +1,11 @@
-# ngsildclient 0.2.0
-## June 23, 2022
+# ngsildclient 0.2.0 (breaking changes)
+## June 24, 2022
 
 - Added multiple-attribute support
 - Added autocomplete-friendly entity navigation
+- Removed output to key-values
+- Removed `Auto` date caching
+- Updated documentation
 
 # ngsildclient 0.1.10
 ## June 22, 2022

@@ -80,6 +80,8 @@ The corresponding JSON-LD [payload](https://github.com/Orange-OpenSource/python-
 
 User guide is available on [Read the Docs](https://ngsildclient.readthedocs.io/en/latest/index.html).
 
+Older 0.1.x documentation is available [here](https://ngsildclient.readthedocs.io/en/v0.1.9/index.html).
+
 ## License
 
 [Apache 2.0](LICENSE)

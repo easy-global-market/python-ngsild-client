@@ -45,7 +45,7 @@ class NgsiDict(DotMap):
 
     def __init__(self, *args, **kwargs):
         kwargs["_dynamic"] = False
-        kwargs["_prevent_method_masking"] = True
+        kwargs["_prevent_method_masking"] = False
         super().__init__(*args, **kwargs)
 
     @classmethod
@@ -58,16 +58,6 @@ class NgsiDict(DotMap):
         with open(filename, "r") as fp:
             d = json.load(fp)
             return cls(d)
-
-    # def as_fragment(self):
-    #     from .fragment import Fragment
-
-    #     return Fragment(self)
-
-    # def new_fragment(self):
-    #     from .fragment import Fragment
-
-    #     return Fragment(deepcopy(self))
 
     def __repr__(self):
         return self.toDict().__repr__()

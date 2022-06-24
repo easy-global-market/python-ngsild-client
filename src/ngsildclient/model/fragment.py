@@ -10,7 +10,6 @@
 # Author: Fabien BATTELLO <fabien.battello@orange.com> et al.
 
 from __future__ import annotations
-from email.errors import InvalidMultipartContentTransferEncodingDefect
 
 import logging
 import regex
@@ -244,6 +243,31 @@ class Fragment:
                     i = int(ix[1:-1])
                     current = current[i]
             return current
+        except Exception:
+            raise KeyError(key)
+
+    def _set(self, key: str, value: Any):
+        try:
+            old = None
+            current = self._payload
+            parts = key.split(".")
+            for p in parts:
+                m = PATTERN.match(p)
+                k = m["key"]
+                old = current
+                current = current[k]
+                for ix in m.captures("index"):
+                    i = int(ix[1:-1])
+                    old = current
+                    current = current[i]
+            print(f"{current=}, {old=}")
+            lastkey = key.rsplit(".")[-1]
+            try:
+                index = lastkey.index("[")
+                lastkey = lastkey[:index]
+            except ValueError:
+                pass
+            old[lastkey] = value
         except Exception:
             raise KeyError(key)
 
@@ -612,9 +636,12 @@ class Fragment:
         return self
 
     def __eq__(self, other: Fragment):
-        if other.__class__ is not self.__class__:
+        if other.__class__ is self.__class__:
+            return self._payload == other._payload
+        elif isinstance(other, (NgsiDict, dict)):
+            return self._payload == other
+        else:
             return NotImplemented
-        return self._payload == other._payload
 
     def __repr__(self):
         return self._payload.__repr__()

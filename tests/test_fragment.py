@@ -81,3 +81,41 @@ def test_append_unqualified():
         "datasetId": "urn:ngsi-ld:Property:gpsA4567-speed",
         "source": {"type": "Property", "value": "GPS"},
     }
+
+
+def test_set_0():
+    e = Entity("Vehicle", "A4567").prop("brandName", "Mercedes")
+    e.prop("speed", 55, datasetid="Property:speedometerA4567-speed").prop("source", "Speedometer", NESTED)
+    e._set("type", "Van")
+    assert e.type == "Van"
+
+
+def test_set_1():
+    e = Entity("Vehicle", "A4567").prop("brandName", "Mercedes")
+    e.prop("speed", 55, datasetid="Property:speedometerA4567-speed").prop("source", "Speedometer", NESTED)
+    e._set("brandName.value", "Peugeot")
+    assert e["brandName"] == {"type": "Property", "value": "Peugeot"}
+
+
+def test_set_2():
+    e = Entity("Vehicle", "A4567").prop("brandName", "Mercedes")
+    e.prop("speed", 55, datasetid="Property:speedometerA4567-speed").prop("source", "Speedometer", NESTED)
+    speed2 = e["speed"].copy()
+    speed2.dotmap.value = 44.5
+    speed2.dotmap.source.value = "GPS"
+    speed2.dotmap.datasetId = Urn.prefix("Property:gpsA4567-speed")
+    e.append(speed2, attr="speed")
+    e._set("speed[1].source.value", "Antenna")
+    assert e["speed[1].source"] == {"type": "Property", "value": "Antenna"}
+
+
+def test_set_3():
+    e = Entity("Vehicle", "A4567").prop("brandName", "Mercedes")
+    e.prop("speed", 55, datasetid="Property:speedometerA4567-speed").prop("source", "Speedometer", NESTED)
+    speed2 = e["speed"].copy()
+    speed2.dotmap.value = 44.5
+    speed2.dotmap.source.value = "GPS"
+    speed2.dotmap.datasetId = Urn.prefix("Property:gpsA4567-speed")
+    e.append(speed2, attr="speed")
+    e._set("speed[1]", {"Property": "nimp"})
+    assert e["speed[1]"] == {"type": "Property", "value": "nimp"}

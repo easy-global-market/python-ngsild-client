@@ -258,7 +258,7 @@ class Fragment:
                 current = current[k]
                 for ix in m.captures("index"):
                     i = int(ix[1:-1])
-                    old = current
+                    # old = current
                     current = current[i]
             print(f"{current=}, {old=}")
             lastkey = key.rsplit(".")[-1]

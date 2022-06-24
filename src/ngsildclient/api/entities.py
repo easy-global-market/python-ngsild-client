@@ -44,7 +44,7 @@ class Entities:
     ) -> Optional[Entity]:
         r = self._session.post(
             f"{self.url}/",
-            json=entity._payload,
+            json=entity.to_dict(),
         )
 
         if r.status_code == 409:  # already exists

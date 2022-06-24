@@ -36,7 +36,7 @@ class BatchOp:
         self, entities: List[Entity], skip: bool = False, overwrite: bool = False
     ) -> tuple[bool, dict]:
         r = self._session.post(
-            f"{self.url}/create/", json=[entity._payload for entity in entities]
+            f"{self.url}/create/", json=[entity.to_dict() for entity in entities]
         )
         if r.status_code == 201:
             return True, r.json()
@@ -46,7 +46,7 @@ class BatchOp:
     @rfc7807_error_handle
     def upsert(self, entities: List[Entity]) -> tuple[bool, dict]:
         r = self._session.post(
-            f"{self.url}/upsert/", json=[entity._payload for entity in entities]
+            f"{self.url}/upsert/", json=[entity.to_dict() for entity in entities]
         )
         if r.status_code == 201:
             return True, r.json()
@@ -60,7 +60,7 @@ class BatchOp:
     @rfc7807_error_handle
     def update(self, entities: List[Entity]) -> tuple[bool, dict]:
         r = self._session.post(
-            f"{self.url}/update/", json=[entity._payload for entity in entities]
+            f"{self.url}/update/", json=[entity.to_dict() for entity in entities]
         )
         if r.status_code == 204:
             return True, {"success": "all entities have been successfully updated"}

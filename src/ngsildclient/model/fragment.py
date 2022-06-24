@@ -10,9 +10,10 @@
 # Author: Fabien BATTELLO <fabien.battello@orange.com> et al.
 
 from __future__ import annotations
+from email.errors import InvalidMultipartContentTransferEncodingDefect
 
 import logging
-
+import regex
 from copy import deepcopy
 from functools import partialmethod
 
@@ -26,11 +27,13 @@ from .ngsidict import NgsiDict
 
 logger = logging.getLogger(__name__)
 
+PATTERN = regex.compile(r"(?P<key>\w+){1}(?P<index>\[\d+\])*")
+
 """This module contains the definition of the Entity class.
 """
 
 
-class Fragment():
+class Fragment:
     """The main goal of this class is to build, manipulate and represent a NGSI-LD compliant entity.
 
     The preferred constructor allows to create an entity from its NGSI-LD type and identifier (and optionally context),
@@ -138,7 +141,7 @@ class Fragment():
     >>> e.rm("NO2.accuracy")
     """
 
-    def __init__(self, payload: dict = {}, shallow = True):
+    def __init__(self, payload: dict = {}, shallow=True):
         """Create a NGSI-LD entity from a dictionary.
 
         The input dictionary must at least contain the 'id', 'type' and '@context'.
@@ -162,15 +165,26 @@ class Fragment():
         else:
             self._payload = NgsiDict(payload)
 
+    def is_root_fragment(self) -> bool:
+        return False
+
     @property
     def dotmap(self) -> DotMap:
         return self._payload
 
     def hasroot(self) -> bool:
+        if self.is_root_fragment():
+            return False
         return "type" not in self._payload.keys()
 
-    def root(self) -> str:
-        return [*self._payload.keys()][0]
+    @property
+    def rootattr(self) -> str:
+        if self.hasroot():
+            try:
+                return [*self._payload.keys()][0]
+            except (KeyError, IndexError):
+                return None
+        return None
 
     @classmethod
     def from_dict(cls, payload: dict):
@@ -218,13 +232,29 @@ class Fragment():
         """
         return Fragment.duplicate(self)
 
-    def __getitem__(self, key):
-        return self._payload[key]
+    def _get(self, key: str) -> Any:
+        try:
+            current = self._payload
+            parts = key.split(".")
+            for p in parts:
+                m = PATTERN.match(p)
+                k = m["key"]
+                current = current[k]
+                for ix in m.captures("index"):
+                    i = int(ix[1:-1])
+                    current = current[i]
+            return current
+        except Exception:
+            raise KeyError(key)
 
-    def __setitem__(self, key, value):
+    def __getitem__(self, key: str) -> Fragment:
+        item = self._get(key)
+        return Fragment(item) if isinstance(item, dict) else item
+
+    def __setitem__(self, key: str, value: Any):
         self._payload[key] = value
 
-    def __delitem__(self, key):
+    def __delitem__(self, key: str):
         del self._payload[key]
 
     def __or__(self, other):
@@ -239,62 +269,32 @@ class Fragment():
             self._payload |= other
         return self
 
-    def set(self, value: Fragment = None, *, attr: str = None):
-        if attr is None:
-            if value is None or not value.hasroot():
-                raise ValueError("value must have a root attribute")
-            attr = value.root()
-            value = value[attr]
-        if isinstance(value, Fragment):
-            value = value._payload
-        self[attr] = value
-
-    # def append(self, value: Fragment = None, /, attr: str = None):
-    #     if attr is None:
-    #         if value is None or not value.hasroot():
-    #             raise ValueError("value must have a root attribute")
-    #         attr = value.root()
-    #         value = value[attr]
-    #     try:
-    #         item = self[attr]
-    #     except KeyError:
-    #         self[attr] = [value]
-    #         return
-    #     if not isinstance(item, List):
-    #         self[attr] = [item]
-    #     if isinstance(value, Fragment):
-    #         value = value._payload
-    #         # value = value.to_dict()
-    #     # elif isinstance(value, NgsiDict):
-    #     #     value = value.toDict()
-    #     self[attr].append(value)
-
-    def _append(self, value: Fragment, attr: str = None):
-        if attr is None:
-            if value is None or not value.hasroot():
-                raise ValueError("Value must have a root attribute")
-            attr = value.root()
-            value = value[attr]
-        else:
-            if value is not None and value.hasroot():
-                raise ValueError("Value already has a root attribute")
+    def _append_unqualified(self, rootattr: str, value: Fragment):
+        if value.hasroot():
+            raise ValueError("Value already has a root attribute")
         try:
-            item = self[attr]
+            item = self[rootattr]
         except KeyError:
-            self[attr] = [value]
+            self[rootattr] = [value.to_dict()]
             return
         if not isinstance(item, List):
-            self[attr] = [item]
+            self[rootattr] = [item.to_dict()]
         if isinstance(value, Fragment):
-            value = value._payload
-            # value = value.to_dict()
-        # elif isinstance(value, NgsiDict):
-        #     value = value.toDict()
-        self[attr].append(value)
+            value = value.to_dict()
+        self[rootattr].append(value)
+
+    def _append_with_rootattr(self, value: Fragment):
+        if not value.hasroot():
+            raise ValueError("Value must have a root attribute")
+        print(f"{value.rootattr=}")
+        self._append_unqualified(value.rootattr, value[value.rootattr])
 
     def append(self, *values, attr: str = None):
         for v in values:
-            self._append(v, attr)
+            if v.hasroot():
+                self._append_with_rootattr(v)
+            else:
+                self._append_unqualified(attr, v)
 
     def jsonpath(self, path: str) -> Fragment:
         return self._payload._jsonpath(path)
@@ -371,7 +371,7 @@ class Fragment():
                 self._lastprop = property
         else:
             self._lastprop = self._payload[attrname] = property
-       
+
     def prop(
         self,
         name: str,

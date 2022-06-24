@@ -298,6 +298,9 @@ class Entity(Fragment):
     def context(self, ctx: list):
         self._payload["@context"] = ctx
 
+    def is_root_fragment(self) -> bool:
+        return True
+
     @classmethod
     def load(cls, filename: str):
         """Load an Entity from a JSON file, locally from the filesystem or remotely through HTTP.

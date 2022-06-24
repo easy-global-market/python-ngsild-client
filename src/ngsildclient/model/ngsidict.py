@@ -69,6 +69,9 @@ class NgsiDict(DotMap):
 
     #     return Fragment(deepcopy(self))
 
+    def __repr__(self):
+        return self.toDict().__repr__()
+
     def to_json(self, indent=None) -> str:
         """Returns the dict in json format"""
         return json.dumps(self, default=str, ensure_ascii=False, indent=indent)

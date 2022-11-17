@@ -14,7 +14,7 @@ import requests
 from requests.auth import AuthBase
 from dataclasses import dataclass
 from typing import Optional, Tuple, Generator, List, Union, overload
-from math import ceil
+from math import ceil, floor
 
 from ..utils import is_interactive
 from ..model.entity import Entity
@@ -588,8 +588,9 @@ class Client:
         batch: bool = False,
         **kwargs,
     ) -> Generator[Entity, None, None]:
-        count = self.entities.count(type, q)
-        for page in range(ceil(count / limit)):
+        count = self.entities.count(type, q, ctx=ctx)
+        start_page = floor(kwargs.get("skip",0)/limit)
+        for page in range(start_page, ceil(count / limit)):
             if batch:
                 yield self.entities.query(type, q, ctx, limit, page * limit)
             else:

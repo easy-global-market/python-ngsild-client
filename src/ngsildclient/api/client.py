@@ -130,10 +130,8 @@ class Client:
         self.proxy = proxy
 
         self.session = requests.Session()
-        
         if (custom_auth):
             self.session.auth = custom_auth
-        
         self.session.headers = {
             "User-Agent": self.useragent,
             "Accept": "application/ld+json",
@@ -156,11 +154,13 @@ class Client:
 
         # get status and retrieve Context Broker information
         status = self.is_connected(raise_for_disconnected=True)
-        if status and is_interactive():
+        if status:
             self.broker = Broker(*self.guess_vendor())
-            print(self._welcome_message())
+            if is_interactive():
+                print(self._welcome_message())
         else:
-            print(self._fail_message())
+            if is_interactive():
+                print(self._fail_message())
 
     def raise_for_status(self, r: Response):
         """Raises an exception depending on the API response.

@@ -15,8 +15,8 @@ from dataclasses import dataclass
 
 @dataclass
 class PostalAddress:
-    """A PostalAddress as defined here : https://schema.org/PostalAddress.
-    """
+    """A PostalAddress as defined here : https://schema.org/PostalAddress."""
+
     country: str = None
     locality: str = None
     region: str = None
@@ -40,6 +40,7 @@ class PostalAddress:
             d["addressRegion"] = self.region
         if self.country:
             d["addressCountry"] = self.country
+        d["type"] = "PostalAddress"
         if not d:
             raise ValueError("PostalAddress is empty")
         return d
@@ -48,8 +49,8 @@ class PostalAddress:
 class PostalAddressBuilder:
     """A helper class that allows to easily build a PostalAddress property.
 
-    Example:
-    --------
+    Example
+    -------
     >>> from ngsildclient import *
     >>> builder = PostalAddressBuilder()
     >>> address = builder.street("C/ La Pereda 14")
@@ -78,6 +79,7 @@ class PostalAddressBuilder:
         }
     }
     """
+
     def __init__(self):
         self._addr: PostalAddress = PostalAddress()
 

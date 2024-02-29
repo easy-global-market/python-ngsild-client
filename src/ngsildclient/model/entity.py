@@ -13,26 +13,59 @@ from __future__ import annotations
 
 import json
 import requests
+import httpx
+import aiofiles
 import logging
 
 from copy import deepcopy
 from functools import partialmethod
-from dataclasses import dataclass
-
 from datetime import datetime
-from typing import overload, Any, Union, List, Optional, Callable
-from rich import print_json
+from typing import (
+    Sequence,
+    Any,
+    Union,
+    List,
+    Tuple,
+    Optional,
+    Mapping,
+    Callable,
+)
+from multipledispatch import dispatch
 
-from .exceptions import *
-from .constants import *
-from .ngsidict import NgsiDict
-from ngsildclient.utils import iso8601, url, is_interactive
+from ngsildclient.model.ngsidict import NgsiDict
+from ngsildclient.utils import iso8601, url
 from ngsildclient.utils.urn import Urn
+from ngsildclient.model.exceptions import NgsiMissingIdError, NgsiMissingTypeError, NgsiMissingContextError
+from ngsildclient.model.constants import CORE_CONTEXT, LD_PREFIX, Rel, NgsiDate, NgsiGeometry
+from ngsildclient.settings import globalsettings
 
 logger = logging.getLogger(__name__)
 
 """This module contains the definition of the Entity class.
 """
+
+# Properties and Relationships support Multi-Attributes
+# Temporal Properties and Geospatial Properties DO NOT support Multi-Attributes
+
+# The 4 following functions allow to build attributes along with their name,
+# independently of any Entity.
+# It is useful when building multi-attributes properties.
+
+
+def mkprop(name: str, *args, **kwargs):
+    return NgsiDict.mkprop(*args, attrname=name, **kwargs)
+
+
+def mkgprop(name: str, *args, **kwargs):
+    return NgsiDict.mkgprop(*args, attrname=name, **kwargs)
+
+
+def mktprop(name: str, *args, **kwargs):
+    return NgsiDict.mktprop(*args, attrname=name, **kwargs)
+
+
+def mkrel(name: str, *args, **kwargs):
+    return NgsiDict.mkrel(*args, attrname=name, **kwargs)
 
 
 class Entity:
@@ -64,8 +97,6 @@ class Entity:
 
     Dates and Datetimes are ISO8601.
     Helper functions are provided in the module utils.iso8601.
-    Often a same date (the one when the measure/event happened) is used many times in the entity.
-    When building an entity, the first time a datetime is used it is cached, then can be reused using "Auto".
 
     Given a NGSI-LD entity, many actions are possible :
     - access/add/remove/update attributes
@@ -92,8 +123,8 @@ class Entity:
     model.NgsiDict : a custom dictionary that inherits from the native dict and provides primitives to build attributes
     api.client.Client : the NGSI-LD Context Broker client to interact with a Context Broker
 
-    Example:
-    --------
+    Example
+    -------
     >>> from datetime import datetime
     >>> from ngsildclient import *
 
@@ -102,11 +133,12 @@ class Entity:
 
     >>> # Add a temporal property named dateObserved
     >>> # We could provide a string if preferred (rather than a datetime)
-    >>> e.tprop("dateObserved", datetime(2018, 8, 7, 12))
+    >>> dt = datetime(2018, 8, 7, 12)
+    >>> e.tprop("dateObserved", dt)
 
     >>> # Add a property named NO2 with a pollutant concentration value and a metadata to indicate the unit (mg/m3)
     >>> # The accuracy property is nested
-    >>> e.prop("NO2", 22, unitcode="GP", observedat=Auto).prop("accuracy", 0.95, NESTED)
+    >>> e.prop("NO2", 22, unitcode="GP", observedat=dt).prop("accuracy", 0.95, NESTED)
 
     >>> # Add a relationship towards a POI NGSI-LD Entity
     >>> e.rel("refPointOfInterest", "PointOfInterest:RZ:MainSquare")
@@ -152,145 +184,38 @@ class Entity:
     >>> e.rm("NO2.accuracy")
     """
 
-    @dataclass
-    class Settings:
-        """The default settings used to build an Entity"""
+    @staticmethod
+    def _build_fully_qualified_id(type: str, id: str) -> Urn:
+        if globalsettings.autoprefix:
+            bare_id = Urn.unprefix(id)
+            if not bare_id.startswith(f"{type}:"):
+                id = f"{type}:{bare_id}"
+        return Urn.prefix(id)
 
-        autoprefix: bool = True
-        """A boolean to enable/disable the automatic insertion of the type into the identifier.
-        Default is enabled.
-        """
-
-        strict: bool = False  # for future use
-        autoescape: bool = True  # for future use
-        f_print: Callable = print_json if is_interactive() else print
-
-    globalsettings: Settings = Settings()
-
-    @overload
-    def __init__(self, type: str, id: str, *, ctx: list = [CORE_CONTEXT]):
-        """Create a NGSI-LD compliant entity
-
-        One can omit the urn and namespace, "urn:ngsi-ld:" will be added automatically.
-        One can omit the type inside the identifier.
-
-        By default, the constructor assumes the identifier naming convention "urn:ngsi-ld:<type>:<remainder>" and automatically
-        insert the type into the identifier.
-        The default behaviour can be disabled : Entity.globalsettings.autoprefix = False.
-
-
-        Parameters
-        ----------
-        type : str
-            entity type
-        id : str
-            entity identifier
-        ctx : list, optional
-            the NGSI-LD context, by default the NGSI-LD Core Context
-
-        Example:
-        --------
-        >>> from ngsildclient.model.entity import Entity
-        >>> e1 = Entity("AirQualityObserved", "urn:ngsi-ld:AirQualityObserved:RZ:Obsv4567") # long form
-        >>> e2 = Entity("AirQualityObserved", "AirQualityObserved:RZ:Obsv4567") # omit scheme + nss
-        >>> e3 = Entity("AirQualityObserved", "RZ:Obsv4567") # omit scheme + nss + type
-        >>> print(e1 == e2 == e3)
-        True
-        >>> e1.pprint()
-        {
-            "@context": [
-                "https://uri.etsi.org/ngsi-ld/v1/ngsi-ld-core-context.jsonld"
-            ],
-            "id": "urn:ngsi-ld:AirQualityObserved:RZ:Obsv4567",
-            "type": "AirQualityObserved"
-        }
-        """
-        ...
-
-    @overload
-    def __init__(self, id: str, *, ctx: list = [CORE_CONTEXT]):
-        """Create a NGSI-LD compliant entity.
-
-        Type is inferred from the fully qualified identifier.
-        Works only if your identifiers follow the naming convention "urn:ngsi-ld:<type>:<remainder>"
-
-        Parameters
-        ----------
-        id : str
-            entity identifier (fully qualified urn)
-        context : list, optional
-            the NGSI-LD context, by default the NGSI-LD Core Context
-
-        Example:
-        --------
-        >>> from ngsildclient.model.entity import Entity
-        >>> e = Entity("urn:ngsi-ld:AirQualityObserved:RZ:Obsv4567")
-        >>> e.pprint()
-        {
-            "@context": [
-                "https://uri.etsi.org/ngsi-ld/v1/ngsi-ld-core-context.jsonld"
-            ],
-            "id": "urn:ngsi-ld:AirQualityObserved:RZ:Obsv4567",
-            "type": "AirQualityObserved"
-        }
-        """
-        ...
-
-    def __init__(
-        self,
-        arg1: str = None,
-        arg2: str = None,
-        *,
-        ctx: list = [CORE_CONTEXT],
-        payload: dict = None,
-        autoprefix: Optional[bool] = None,
-    ):
-        logger.debug(f"{arg1=} {arg2=}")
-
-        if autoprefix is None:
-            autoprefix = Entity.globalsettings.autoprefix
-
-        self._lastprop: NgsiDict = None
+    @dispatch(dict)
+    def __init__(self, payload: dict):
+        if not payload.get("id", None):
+            raise NgsiMissingIdError()
+        if not payload.get("type", None):
+            raise NgsiMissingTypeError()
+        if not payload.get("@context"):
+            payload["@context"] = [CORE_CONTEXT]
+        self._lastprop = self.root = NgsiDict(payload)
         self._anchored: bool = False
+        self._lastwasmulti: bool = False
 
-        if payload is not None:  # create Entity from a dictionary
-            if not payload.get("id", None):
-                raise NgsiMissingIdError()
-            if not payload.get("type", None):
-                raise NgsiMissingTypeError()
-            if not payload.get("@context", None):
-                raise NgsiMissingContextError()
-            self._payload: NgsiDict = NgsiDict(payload)
-            return
+    @dispatch(str, str)
+    def __init__(self, type: str, id: str, *, ctx: List[str] = None):  # noqa F811
+        id = Entity._build_fully_qualified_id(type, id)
+        self.__init__({"id": id, "type": type, "@context": ctx or [CORE_CONTEXT]})
 
-        # create a new Entity using its id and type
-
-        if arg2:
-            type, id = arg1, arg2
-        else:
-            type, id = None, arg1
-
-        dt = iso8601.extract(id)
-
-        if type is None:  # try to infer type from the fully qualified identifier
-            id = Urn.prefix(id)
-            urn = Urn(id)
-            if (type := urn.infertype()) is None:
-                raise NgsiMissingTypeError(f"{urn.fqn=}")
-        else:  # type is not None
-            autoprefix &= not Urn.is_prefixed(id)
-            if autoprefix:
-                bareid = Urn.unprefix(id)
-                prefix = f"{type}:"
-                if not bareid.startswith(prefix):
-                    id = prefix + bareid
-            id = Urn.prefix(id)  # set the prefix "urn:ngsi-ld:" if not already done
-            urn = Urn(id)
-
-        self._payload: NgsiDict = NgsiDict(
-            {"@context": ctx, "id": urn.fqn, "type": type},
-            dtcached=dt if dt else iso8601.utcnow(),
-        )
+    @dispatch(str)
+    def __init__(self, id: str, *, ctx: List[str] = None):  # noqa F811
+        id = Urn.prefix(id)
+        urn = Urn(id)
+        if (type := urn.infertype()) is None:
+            raise NgsiMissingTypeError(f"{urn.fqn=}")
+        self.__init__({"id": id, "type": type, "@context": ctx or [CORE_CONTEXT]})
 
     @classmethod
     def from_dict(cls, payload: dict):
@@ -309,26 +234,41 @@ class Entity:
         Entity
             The result Entity instance
         """
-        return cls(payload=payload)
+        return cls(payload)
 
     @classmethod
-    def duplicate(cls, entity: Entity) -> Entity:
-        """Duplicate a given entity.
+    def from_json(cls, content: str):
+        """Create a NGSI-LD entity from JSON content.
+
+        The JSON content must at least contain the "id", "type" and "@context".
+        This method assumes that the input JSON content matches a valid NGSI-LD structure.
 
         Parameters
         ----------
-        entity : Entity
-            The input Entity
+        payload : str
+            The given JSON content.
 
         Returns
         -------
         Entity
-            The output entity
+            The result Entity instance
         """
-        new = deepcopy(entity)
-        return new
+        payload: dict = json.loads(content)
+        return cls(payload)
 
-    def copy(self) -> Entity:
+    @classmethod
+    def duplicate(cls, entity: Entity) -> Entity:
+        return deepcopy(entity)
+
+    @classmethod
+    def clone(cls, src: Entity, n: int = 0, f: Callable[[Entity, int], None] = None) -> List[Entity]:
+        clones = src * n
+        if f:
+            for i, c in enumerate(clones, 1):
+                c = f(c, i)
+        return clones
+
+    def dup(self) -> Entity:
         """Duplicates the entity
 
         Returns
@@ -336,54 +276,79 @@ class Entity:
         Entity
             The new entity
         """
-        return Entity.duplicate(self)
+        return deepcopy(self)
+
+    def __mul__(self, n: int):
+        res = []
+        for _ in range(n):
+            res.append(Entity.duplicate(self))
+        return res
+
+    __rmul__ = __mul__
+
+    def dupattr(self, attrname: str) -> NgsiDict:
+        """Duplicates the attribute
+
+        Returns
+        -------
+        NgsiDict
+            The new attribute
+        """
+        return NgsiDict({attrname: self[attrname].dup()})
 
     @property
     def id(self):
-        return self._payload["id"]
+        return self.root["id"]
 
     @id.setter
     def id(self, eid: str):
-        self._payload["id"] = eid
+        self.root["id"] = eid
 
     @property
     def type(self):
-        return self._payload["type"]
+        return self.root["type"]
 
     @type.setter
     def type(self, etype: str):
-        self._payload["type"] = etype
+        self.root["type"] = etype
 
     @property
-    def context(self):
-        return self._payload["@context"]
+    def ctx(self):
+        return self.root["@context"]
 
-    @context.setter
-    def context(self, ctx: list):
-        self._payload["@context"] = ctx
+    @ctx.setter
+    def ctx(self, ctx: List):
+        self.root["@context"] = ctx
 
-    def __getitem__(self, item):
-        return self._payload.__getitem__(item)
+    @property
+    def relationships(self) -> List[Tuple[str, str]]:
+        r: List[Tuple[str, str]] = []
+        for k, v in self.root.items():
+            if isinstance(v, Mapping) and v.get("type") == "Relationship":
+                r.append((k, v.get("object")))
+            elif isinstance(v, List):
+                for x in v:
+                    if isinstance(x, Mapping) and x.get("type") == "Relationship":
+                        r.append((k, x.get("object")))
+        return r
+
+    def __getitem__(self, key):
+        return self.root.__getitem__(key)
 
     def __setitem__(self, key, item):
-        self._payload.__setitem__(key, item)
+        self.root.__setitem__(key, item)
 
     def __delitem__(self, key):
-        self._payload.__delitem__(key)
+        self.root.__delitem__(key)
         return self
 
-    def last(self, name: str):
-        item = self[name]
-        if not isinstance(item, List):
-            raise ValueError("Item should be a list")
-        return deepcopy(item[-1])
+    def follow(self, relname: str):
+        from ngsildclient.api.follow import LinkFollower
 
-    def append(self, name: str, value: NgsiDict):
-        item = self[name]
-        if not isinstance(item, List):
-            raise ValueError("Item should be a list")
-        item.append(value)
-        return deepcopy(item[-1])
+        follower: LinkFollower = globalsettings.follower
+        if follower is None:
+            raise ValueError("Follower not set in globalsettings")
+        return follower.follow(self.root[relname]["object"])
 
     def anchor(self):
         """Set an anchor.
@@ -401,8 +366,8 @@ class Entity:
         Entity
             The output entity
 
-        Example:
-        --------
+        Example
+        -------
         Here an anchor is set at the "availableSpotNumber" property.
         Hence the "reliability" and "providedBy" properties are attached to (nested in) the "availableSpotNumber" property.
         Without anchoring, the "reliability" and "providedBy" properties would apply to the entity's root.
@@ -449,81 +414,43 @@ class Entity:
         return self
 
     def _update_entity(self, attrname: str, property: NgsiDict, nested: bool = False):
+        ismulti = isinstance(property, Sequence)
         nested |= self._anchored
-        if nested and self._lastprop is not None:
+        if nested and not self._lastwasmulti:
             # update _lastprop only if not anchored
             self._lastprop[attrname] = property
             if not self._anchored:
                 self._lastprop = property
         else:
-            self._lastprop = self._payload[attrname] = property
+            self._lastprop = self.root[attrname] = property
+        self._lastwasmulti = ismulti
+
+    def __ior__(self, prop: Mapping):
+        self.root |= prop
+        return self
 
     def prop(
         self,
         name: str,
         value: Any,
-        nested: bool = False,
         *,  # keyword-only arguments after this
-        unitcode: str = None,
+        nested: bool = False,
         observedat: Union[str, datetime] = None,
         datasetid: str = None,
-        userdata: NgsiDict = NgsiDict(),
+        unitcode: str = None,
+        userdata: NgsiDict = None,
         escape: bool = False,
     ) -> Entity:
-        """Build a Property.
-
-        Build a property and attach it to the current entity.
-        One can chain prop(),tprop(), gprop(), rel() methods to build nested properties.
-
-        Parameters
-        ----------
-        name : str
-            the property name
-        value : Any
-            the property value
-        observedat : Union[str, datetime], optional
-            observetAt metadata, timestamp, ISO8601, UTC, by default Noneself._update_entity(name, property, nested)
-        userdata : NgsiDict, optional
-            a dict or NgsiDict containing user data, i.e. userdata={"reliability": 0.95}, by default NgsiDict()
-        escape : bool, optional
-            if set escape the string value (useful if contains forbidden characters), by default False
-
-        Returns
-        -------
-        Entity
-            The updated entity
-
-        Example:
-        --------
-        >>> from ngsildclient.model.entity import Entity
-        >>> e = Entity("AirQualityObserved", "RZ:Obsv4567")
-        >>> e.prop("NO2", 22, unitcode="GP") # basic property
-        {'type': 'Property', 'value': 22, 'unitCode': 'GP'}
-        >>> e.prop("PM10", 18, unitcode="GP").prop("reliability", 0.95) # chain methods to obtain a nested property
-        {'type': 'Property', 'value': 0.95}
-        >>> e.pprint()
-        {
-        "@context": [
-            "https://uri.etsi.org/ngsi-ld/v1/ngsi-ld-core-context.jsonld"
-        ],
-        "id": "urn:ngsi-ld:AirQualityObserved:RZ:Obsv4567",
-        "type": "AirQualityObserved",
-        "NO2": {
-            "type": "Property",
-            "value": 22,
-            "unitCode": "GP"
-        },
-        "PM10": {
-            "type": "Property",
-            "value": 18,
-            "unitCode": "GP",
-            "reliability": {
-                "type": "Property",
-                "value": 0.95
-            }
-        }
-        """
-        property = self._payload._build_property(value, unitcode, observedat, datasetid, userdata, escape)
+        if nested and self._lastwasmulti:
+            raise ValueError("Nesting multi-attribute is not allowed")
+        property = NgsiDict.mkprop(
+            value,
+            datasetid=datasetid,
+            observedat=observedat,
+            unitcode=unitcode,
+            userdata=userdata,
+            escape=escape,
+        )
         self._update_entity(name, property, nested)
         return self
 
@@ -534,106 +461,36 @@ class Entity:
         self,
         name: str,
         value: NgsiGeometry,
+        *,  # keyword-only arguments after this
         nested: bool = False,
-        observedat: Union[str, datetime] = None,
         datasetid: str = None,
+        observedat: Union[str, datetime] = None,
+        precision: int = 6,
     ) -> Entity:
-        """Build a GeoProperty.
-
-        Build a GeoProperty and attach it to the current entity.
-        One can chain prop(),tprop(), gprop(), rel() methods to build nested properties.
-
-        Parameters
-        ----------
-        name : str
-            the property name
-        value : NgsiGeometry
-            the property value
-
-        Returns
-        -------
-        Entitydatasetid
-            The updated entity
-
-        Example:
-        --------
-        >>> from ngsildclient.model.entity import Entity
-        >>> e = Entity("PointOfInterest", "RZ:MainSquare")
-        >>> e.prop("description", "Beach of RZ")
-        >>> e.gprop("location", (44, -8))
-        >>> e.pprint()
-        {
-            "@context": [
-                "https://uri.etsi.org/ngsi-ld/v1/ngsi-ld-core-context.jsonld"
-            ],
-            "id": "urn:ngsi-ld:PointOfInterest:RZ:MainSquare",
-            "type": "PointOfInterest",
-            "description": {
-                "type": "Property",
-                "value": "Beach of RZ"
-            },
-            "location": {datasetid
-                "type": "GeoProperty",
-                "value": {
-                "type": "Point",
-                "coordinates": [
-                    -8,datasetid
-            }
-        }
-        """
-        property = self._payload._build_geoproperty(value, observedat, datasetid)
+        property = NgsiDict.mkgprop(value, datasetid=datasetid, observedat=observedat, precision=precision)
         self._update_entity(name, property, nested)
         return self
 
-    loc = partialmethod(gprop, "location")
+    def loc(self, *coord, precision: int = 6, **kwargs) -> Entity:
+        if len(coord) == 1 and isinstance(coord, Tuple):
+            coord = coord[0]
+        if len(coord) == 2:
+            return self.gprop("location", coord, precision=precision, **kwargs)
+        raise ValueError("lat,lon tuple expected")
+
     """ A helper method to set the frequently used "location" geoproperty.
 
-    entity.loc((44, -8)) is a shorcut for entity.gprop("location", (44, -8))
+    entity.loc(44, -8) is a shorcut for entity.gprop("location", (44, -8))
     """
 
-    def tprop(self, name: str, value: NgsiDate = None, nested: bool = False) -> Entity:
-        """Build a TemporalProperty.
-
-        Build a TemporalProperty and attach it to the current entity.
-        One can chain prop(),tprop(), gprop(), rel() methoddatasetids to build nested properties.
-
-        Parameters
-        ----------
-        name : str
-            the property name
-        value : NgsiDate
-            the property value, utcnow() if None
-
-        Returns
-        -------
-        Entity
-            The updated entity
-
-        Example:
-        --------
-        >>> from datetime import datetime
-        >>> from ngsildclient.model.entity import Entity
-        >>> e = Entity("AirQualityObserved", "RZ:Obsv4567")
-        >>> e.tprop("dateObserved", datetime(2018, 8, 7, 12))
-        >>> e.pprint()
-        {
-            "@context": [datasetid
-                "https://uri.etsi.org/ngsi-ld/v1/ngsi-ld-core-context.jsonld"
-            ],
-            "id": "urn:ngsi-ld:AirQualityObserved:RZ:Obsv4567",
-            "type": "AirQualityObserved",
-            "dateObserved": {
-                "type": "Property",
-                "value": {
-                    "@type": "DateTime",
-                    "@value": "2018-08-07T12:00:00Z"
-                }
-            }
-        }
-        """
-        if value is None:
-            value = self._payload._dtcached
-        property = self._payload._build_temporal_property(value)
+    def tprop(
+        self,
+        name: str,
+        value: NgsiDate = iso8601.utcnow(),
+        *,  # keyword-only arguments after this
+        nested: bool = False,
+    ) -> Entity:
+        property = NgsiDict.mktprop(value)
         self._update_entity(name, property, nested)
         return self
 
@@ -647,147 +504,61 @@ class Entity:
         self,
         name: Union[Rel, str],
         value: Union[str, List[str], Entity, List[Entity]],
+        *,  # keyword-only arguments after this
         nested: bool = False,
-        *,
         observedat: Union[str, datetime] = None,
         datasetid: str = None,
-        userdata: NgsiDict = NgsiDict(),
     ) -> Entity:
-        """Build a Relationship Property.
-
-        Build a Relationship Property and attach it to the current entity.
-        One can chain prop(),tprop(), gprop(), rel() methods to build nested properties.
-
-        Parameters
-        ----------
-        name : str
-            the property name
-        value : str
-            the property value
-
-        Returns
-        -------
-        Entity
-            The updated entity
-
-        Example:
-        --------
-        >>> from ngsildclient.model.entity import Entity
-        >>> e = Entity("AirQualityObserved", "RZ:Obsv4567")
-        >>> e.rel("refPointOfInterest", "PointOfInterest:RZ:MainSquare")
-        >>> e.pprint()
-        {
-            "@context": [
-                "https://uri.etsi.org/ngsi-ld/v1/ngsi-ld-core-context.jsonld"
-            ],
-            "id": "urn:ngsi-ld:AirQualityObserved:RZ:Obsv4567",
-            "type": "AirQualityObserved",
-            "refPointOfInterest": {
-                "type": "Relationship",
-                "object": "urn:ngsi-ld:PointOfInterest:RZ:MainSquare"
-            }
-        }
-        """
-        if isinstance(name, Rel):
-            name = name.value
-
-        if isinstance(value, List):
-            property = self._payload._m_build_relationship(value, observedat, datasetid, userdata)
-        else:
-            property = self._payload._build_relationship(value, observedat, datasetid, userdata)
+        if nested and self._lastwasmulti:
+            raise ValueError("Nesting multi-attribute is not allowed")
+        name = name.value if isinstance(name, Rel) else name
+        property = NgsiDict.mkrel(value, datasetid=datasetid, observedat=observedat)
         self._update_entity(name, property, nested)
-
         return self
 
     def __eq__(self, other: Entity):
         if other.__class__ is not self.__class__:
             return NotImplemented
-        return self._payload == other._payload
+        return self.root == other.root
 
     def __repr__(self):
-        return self._payload.__repr__()
+        return self.root.__repr__()
 
-    def arrayify(self, name: str) -> NgsiDict:
-        prop = self[name]
-        if isinstance(prop, List):
-            return None
-        self[name] = [prop]
-        return deepcopy(prop)
+    def rm(self, key: str):
+        self.root.__delitem__(key)
 
-    def unarrayify(self, name: str) -> NgsiDict:
-        prop = self[name]
-        if not isinstance(prop, List):
-            return None
-        lastprop = prop[-1]
-        self[name] = lastprop
-        return lastprop
+    def rmsysattrs(self):
+        try:
+            for key in ("createdAt", "modifiedAt"):
+                self.root.__delitem__(key)
+        except KeyError:
+            pass
 
-    def to_dict(self, kv=False) -> NgsiDict:
+    def to_dict(self) -> NgsiDict:
         """Returns the entity as a dictionary.
 
         The returned type is NgsiDict, fully compatible with a native dict.
-
-        Parameters
-        ----------
-        kv : bool, optional
-            KeyValues format (aka simplified representation), by default False
 
         Returns
         -------
         NgsiDict
             The underlying native Python dictionary
         """
-        return self._to_keyvalues() if kv else self._payload
+        return self.root.to_dict()
 
-    def _to_keyvalues(self) -> NgsiDict:
-        """Compute a NgsiDict that contains only the highest-level of information.
-
-        Returns
-        -------
-        NgsiDict
-            The simplified representation
-        """
-        d = NgsiDict()
-        for k, v in self._payload.items():
-            if isinstance(v, dict):
-                if v["type"] == AttrType.PROP.value:  # apply to Property and TemporalProperty
-                    value = v["value"]
-                    if isinstance(value, dict):
-                        value = value.get("@value", value)  # for Temporal Property only
-                    d[k] = value
-                elif v["type"] == AttrType.GEO.value:
-                    d[k] = v["value"]
-                elif v["type"] == AttrType.REL.value:
-                    d[k] = v["object"]
-            else:
-                d[k] = v
-        return d
-
-    def to_json(self, kv=False, *args, **kwargs) -> str:
+    def to_json(self, *args, pattern: str = None, **kwargs) -> str:
         """Returns the entity as JSON.
-
-        Parameters
-        ----------
-        kv : bool, optional
-            KeyValues format (aka simplified representation), by default False
 
         Returns
         -------
         str
             The JSON content
         """
-        payload: NgsiDict = self.to_dict(kv)
-        return payload.to_json(*args, **kwargs)
+        return self.root.to_json(*args, pattern=pattern, **kwargs)
 
-    def pprint(self, kv=False, *args, **kwargs):
-        """Pretty-print the entity to the standard ouput.
-
-        Parameters
-        ----------
-        kv : bool, optional
-            KeyValues format (aka simplified representation), by default False
-        """
-        Entity.globalsettings.f_print(self.to_json(kv, indent=2, *args, **kwargs))
+    def pprint(self, *args, pattern: str = None, **kwargs):
+        """Pretty-print the entity to the standard ouput."""
+        globalsettings.f_print(self.to_json(indent=2, *args, pattern=pattern, **kwargs))
 
     @classmethod
     def load(cls, filename: str):
@@ -811,10 +582,10 @@ class Entity:
         --------
         model.constants.SmartDataModels
 
-        Example:
-        --------
+        Example
+        -------
         >>> from ngsildclient import *
-        >>> e = Entity.load(SmartDatamodels.SmartCities.Weather.WeatherObserved)
+        >>> e = Entity.load(SmartDataModels.SmartCities.Weather.WeatherObserved)
         """
         if url.isurl(filename):
             resp = requests.get(filename)
@@ -822,6 +593,44 @@ class Entity:
         else:
             with open(filename, "r") as fp:
                 payload = json.load(fp)
+        if isinstance(payload, List):
+            return [cls.from_dict(x) for x in payload]
+        return cls.from_dict(payload)
+
+    @classmethod
+    async def load_async(cls, filename: str):
+        """Load an Entity from a JSON file, locally from the filesystem or remotely through HTTP.
+
+        For convenience some `SmartDataModels <https://smartdatamodels.org/>`_ examples are made available thanks to the Smart Data Models initiative.
+        You can benefit from autocompletion to navigate inside the available datamodels.
+
+        Parameters
+        ----------
+        filename : str
+            If filename corresponds to an URL, the JSON file is downloaded from HTTP.
+            Else it is retrieved locally from the filesystem.
+
+        Returns
+        -------
+        Entity
+            The Entity instance
+
+        See Also
+        --------
+        model.constants.SmartDataModels
+
+        Example
+        -------
+        >>> from ngsildclient import *
+        >>> e = await Entity.load_async(SmartDataModels.SmartCities.Weather.WeatherObserved)
+        """
+        if url.isurl(filename):
+            resp = httpx.get(filename)
+            payload = resp.json()
+        else:
+            async with aiofiles.open(filename, "r") as fp:
+                contents = await fp.read()
+                payload = json.loads(contents)
         if isinstance(payload, List):
             return [cls.from_dict(x) for x in payload]
         return cls.from_dict(payload)
@@ -840,13 +649,39 @@ class Entity:
         List[Entity]
             A list of entities
 
-        Example:
-        --------
+        Example
+        -------
         >>> from ngsildclient import *
         >>> rooms = Entity.load_batch("/tmp/rooms_all.jsonld")
         """
         with open(filename, "r") as fp:
             payload = json.load(fp)
+        if not isinstance(payload, List):
+            raise ValueError("The JSON payload MUST be an array")
+        return [cls.from_dict(x) for x in payload]
+
+    @classmethod
+    async def load_batch_async(cls, filename: str):
+        """Load a batch of entities from a JSON file.
+
+        Parameters
+        ----------
+        filename : str
+            The input file must contain a JSON array
+
+        Returns
+        -------
+        List[Entity]
+            A list of entities
+
+        Example
+        -------
+        >>> from ngsildclient import *
+        >>> rooms = await Entity.load_batch_async("/tmp/rooms_all.jsonld")
+        """
+        async with aiofiles.open(filename, "r") as fp:
+            contents = await fp.read()
+            payload = json.loads(contents)
         if not isinstance(payload, List):
             raise ValueError("The JSON payload MUST be an array")
         return [cls.from_dict(x) for x in payload]
@@ -862,7 +697,32 @@ class Entity:
             identation size (number of spaces), by default 2
         """
         with open(filename, "w") as fp:
-            json.dump(self._payload, fp, default=str, ensure_ascii=False, indent=indent)
+            json.dump(
+                self.root,
+                fp,
+                ensure_ascii=False,
+                indent=indent,
+                default=lambda x: x.data if isinstance(x, NgsiDict) else str,
+            )
+
+    async def save_async(self, filename: str, *, indent: int = 2):
+        """Save the entity to a file.
+
+        Parameters
+        ----------
+        filename : str
+            Name of the output file
+        indent : int, optional
+            identation size (number of spaces), by default 2
+        """
+        async with aiofiles.open(filename, "w") as fp:
+            payload = json.dumps(
+                self.root,
+                ensure_ascii=False,
+                indent=indent,
+                default=lambda x: x.data if isinstance(x, NgsiDict) else str,
+            )
+            await fp.write(payload)
 
     @classmethod
     def save_batch(cls, entities: List[Entity], filename: str, *, indent: int = 2):
@@ -877,12 +737,47 @@ class Entity:
             If filename corresponds to an URL, the JSON file is downloaded from HTTP.
             Else it is retrieved locally from the filesystem.
 
-        Example:
-        --------
+        Example
+        -------
         >>> from ngsildclient import *
         >>> rooms = [Entity("Room", "Room1"), Entity("Room", "Room2")]
         >>> Entity.save_batch(rooms, "/tmp/rooms_all.jsonld")
         """
-        payload = [x._payload for x in entities]
+        payload = [x.root for x in entities]
         with open(filename, "w") as fp:
-            json.dump(payload, fp, default=str, ensure_ascii=False, indent=indent)
+            json.dump(
+                payload,
+                fp,
+                ensure_ascii=False,
+                indent=indent,
+                default=lambda x: x.data if isinstance(x, NgsiDict) else str,
+            )
+
+    @classmethod
+    async def save_batch_async(cls, entities: List[Entity], filename: str, *, indent: int = 2):
+        """Save a batch of entities to a JSON file.
+
+        Parameters
+        ----------
+        entities: List[Entity]
+            Batch of entities to be saved
+
+        filename : str
+            If filename corresponds to an URL, the JSON file is downloaded from HTTP.
+            Else it is retrieved locally from the filesystem.
+
+        Example
+        -------
+        >>> from ngsildclient import *
+        >>> rooms = [Entity("Room", "Room1"), Entity("Room", "Room2")]
+        >>> await Entity.save_batch_async(rooms, "/tmp/rooms_all.jsonld")
+        """
+        payload = [x.root for x in entities]
+        async with aiofiles.open(filename, "w") as fp:
+            payload = json.dumps(
+                payload,
+                ensure_ascii=False,
+                indent=indent,
+                default=lambda x: x.data if isinstance(x, NgsiDict) else str,
+            )
+            await fp.write(payload)

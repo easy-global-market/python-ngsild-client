@@ -11,28 +11,37 @@
 
 from __future__ import annotations
 
-from typing import Any, Union, List
-from functools import reduce
-from datetime import datetime
-from geojson import Point, LineString, Polygon, MultiPoint
+from typing import Any, List, Literal, Tuple, TYPE_CHECKING
 
-import ngsildclient.model.entity as entity
+if TYPE_CHECKING:
+    from ngsildclient.model.attr.prop import AttrPropValue
+    from ngsildclient.model.attr.geo import AttrGeoValue
+    from ngsildclient.model.attr.temporal import AttrTemporalValue
+    from ngsildclient.model.attr.rel import AttrRelValue
+    from ngsildclient.model.entity import Entity
+
+from collections.abc import MutableMapping, Mapping
+
+from copy import deepcopy
+from datetime import datetime
+from scalpl import Cut
+
 from ..utils import iso8601, url
-from ..utils.urn import Urn
 from .constants import *
 from .exceptions import *
+from ngsildclient.settings import globalsettings
+from ngsildclient.model.utils import tuple_to_point
 
 import json
-import operator
 
 """This module contains the definition of the NgsiDict class.
 """
 
 
-class NgsiDict(dict):
+class NgsiDict(Cut, MutableMapping):
     """This class is a custom dictionary that backs an entity.
 
-    NgsiDict is used to build and hold the entity properties, as well as the entity's root.
+    Attr is used to build and hold the entity properties, as well as the entity's root.
     It's not exposed to the user but intended to be used by the Entity class.
     NgsiDict provides methods that allow to build a dictionary compliant with a NGSI-LD structure.
 
@@ -41,41 +50,78 @@ class NgsiDict(dict):
     model.Entity
     """
 
-    def __init__(self, *args, dtcached: datetime = None, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._dtcached: datetime = dtcached if dtcached else iso8601.utcnow()
+    def __init__(self, data: dict = None, name: str = None):
+        super().__init__(data)
+        self.name = name
+
+    def is_root(self) -> bool:
+        return self.get("@context") is not None
+
+    def __getitem__(self, path: str):
+        item = super().__getitem__(path)
+        if isinstance(item, Mapping) and not isinstance(item, NgsiDict):
+            from ngsildclient.model.attr.factory import AttrFactory
+
+            return AttrFactory.create(item)
+        return item
+
+    def get(self, path: str, default=None):
+        try:
+            item = super().__getitem__(path)
+        except (KeyError, IndexError):
+            return default
+        if isinstance(item, Mapping) and not isinstance(item, NgsiDict):
+            from ngsildclient.model.attr.factory import AttrFactory
+
+            return AttrFactory.create(item)
+        return item
+
+    def __repr__(self):
+        return self.data.__repr__()
+
+    def __ior__(self, prop: Mapping):
+        prop = prop.data if isinstance(prop, NgsiDict) else prop
+        self.data |= prop
+        return self
+
+    def __mul__(self, n: int):
+        res = []
+        for _ in range(n):
+            res.append(NgsiDict.duplicate(self))
+        return res
+
+    __rmul__ = __mul__
+
+    @classmethod
+    def duplicate(cls, attr: NgsiDict) -> NgsiDict:
+        return deepcopy(attr)
+
+    def dup(self) -> NgsiDict:
+        """Duplicates the NgsiDict
+
+        Returns
+        -------
+        Entity
+            The new entity
+        """
+        return deepcopy(self)
+
+    @property
+    def value(self):
+        raise NotImplementedError()
+
+    @value.setter
+    def value(self, v: Any):
+        raise NotImplementedError()
+
+    @property
+    def type(self) -> Literal["Property", "GeoProperty", "TemporalProperty", "Relationship"]:
+        raise NotImplementedError()
 
     @classmethod
     def _from_json(cls, payload: str):
         d = json.loads(payload)
         return cls(d)
-
-    def _cachedate(self, dt: datetime):
-        self._dtcached = dt
-
-    def _dateauto(self):
-        if self._dtcached is None:
-            self._dtcached = iso8601.utcnow()
-        return self._dtcached
-
-    def __getitem__(self, element: str):
-        return reduce(dict.__getitem__, element.split("."), self)
-
-    def __delitem__(self, element: str):
-        try:
-            nested, k = element.rsplit(".", 1)
-        except ValueError:
-            dict.__delitem__(self, element)
-        else:
-            dict.__delitem__(self[nested], k)
-
-    def __setitem__(self, key: str, value: Any):
-        try:
-            nested, k = key.rsplit(".", 1)
-        except ValueError:
-            dict.__setitem__(self, key, value)
-        else:
-            dict.__setitem__(self[nested], k, value)
 
     @classmethod
     def _load(cls, filename: str):
@@ -83,153 +129,108 @@ class NgsiDict(dict):
             d = json.load(fp)
             return cls(d)
 
-    def to_json(self, indent=None) -> str:
+    def to_dict(self) -> dict:
+        return self.data
+
+    def to_json(self, pattern: str = None, indent: int = None) -> str:
         """Returns the dict in json format"""
-        return json.dumps(self, default=str, ensure_ascii=False, indent=indent)
+        if pattern:
+            pattern = pattern.lower()
+        d = {k: v for k, v in self.items() if pattern in k.lower()} if pattern else self
+        return json.dumps(
+            d, ensure_ascii=False, indent=indent, default=lambda x: x.data if isinstance(x, NgsiDict) else str
+        )
 
     def pprint(self, *args, **kwargs) -> None:
         """Returns the dict pretty-json-formatted"""
-        print(self.to_json(indent=2, *args, **kwargs))
+        globalsettings.f_print(self.to_json(indent=2, *args, **kwargs))
 
     def _save(self, filename: str, indent=2):
         with open(filename, "w") as fp:
-            json.dump(self, fp, default=str, ensure_ascii=False, indent=indent)
+            json.dump(
+                self,
+                fp,
+                ensure_ascii=False,
+                indent=indent,
+                default=lambda x: x.data if isinstance(x, NgsiDict) else str,
+            )
 
-    def _process_observedat(self, observedat):
-        if observedat is Auto:
-            observedat = self._dateauto()
-        date_str, temporaltype, dt = iso8601.parse(observedat)
-        if temporaltype != TemporalType.DATETIME:
-            raise NgsiDateFormatError(f"observedAt must be a DateTime : {date_str}")
-        self._cachedate(dt)
-        return date_str
-
-    def _build_property(
-        self,
+    @classmethod
+    def mkprop(
+        cls,
         value: Any,
-        unitcode: str = None,
-        observedat: Union[str, datetime, type[Auto]] = None,
+        *,  # keyword-only arguments after this
         datasetid: str = None,
+        observedat: Union[str, datetime] = None,
+        unitcode: str = None,
         userdata: NgsiDict = None,
         escape: bool = False,
-    ) -> NgsiDict:
-        property: NgsiDict = NgsiDict()
-        property["type"] = AttrType.PROP.value  # set type
-        if isinstance(value, (int, float, bool, list, dict)):
-            v = value
-        elif isinstance(value, str):
-            v = url.escape(value) if escape else value
+        attrname: str = None,
+    ) -> AttrPropValue:
+        from ngsildclient.model.attr.prop import AttrPropValue
+
+        if isinstance(value, MultAttrValue):
+            if len(value) == 0:
+                raise ValueError("MultAttr is empty")
+            p: List[AttrPropValue] = [AttrPropValue.build(v) for v in value]
         else:
-            raise NgsiUnmatchedAttributeTypeError(f"Cannot map {type(value)} to NGSI type. {value=}")
-        property["value"] = v  # set value
-        if unitcode is not None:
-            property[META_ATTR_UNITCODE] = unitcode
-        if observedat is not None:
-            property[META_ATTR_OBSERVED_AT] = self._process_observedat(observedat)
-        if datasetid is not None:
-            property[META_ATTR_DATASET_ID] = Urn.prefix(datasetid)
-        if userdata:
-            property |= userdata
-        return property
+            value = url.escape(value) if escape and isinstance(value, str) else value
+            attrvalue = AttrValue(value, datasetid, observedat, unitcode, userdata)
+            p = AttrPropValue.build(attrvalue)
+        return {attrname: p} if attrname else p
 
-    def prop(self, name: str, value: str, **kwargs):
-        self[name] = self._build_property(value, **kwargs)
-        return self[name]
-
-    def _build_geoproperty(
-        self,
-        value: NgsiGeometry,
-        observedat: Union[str, datetime, type[Auto]] = None,
+    @classmethod
+    def mkgprop(
+        cls,
+        value: Union[Tuple[float], NgsiGeometry],
+        *,  # keyword-only arguments after this
         datasetid: str = None,
-    ) -> NgsiDict:
-        property: NgsiDict = NgsiDict()
-        property["type"] = AttrType.GEO.value  # set type
-        if isinstance(value, (Point, LineString, Polygon, MultiPoint)):
-            geometry = value
-        elif isinstance(value, tuple) and len(value) == 2:  # simple way for a location Point
-            lat, lon = value
-            geometry = Point((lon, lat))
-        else:
-            raise NgsiUnmatchedAttributeTypeError(f"Cannot map {type(value)} to NGSI type. {value=}")
-        property["value"] = geometry  # set value
-        if observedat is not None:
-            property[META_ATTR_OBSERVED_AT] = self._process_observedat(observedat)
-        if datasetid is not None:
-            property[META_ATTR_DATASET_ID] = Urn.prefix(datasetid)
-        return property
+        observedat: Union[str, datetime] = None,
+        attrname: str = None,
+        precision: int = 6,
+    ) -> AttrGeoValue:
+        from ngsildclient.model.attr.geo import AttrGeoValue
 
-    def gprop(self, name: str, value: str, **kwargs):
-        self[name] = self._build_geoproperty(value, **kwargs)
-        return self[name]
+        if isinstance(value, Tuple):
+            if len(value) == 2:
+                lat, lon = value
+                value = Point((lon, lat), precision=precision)
+            else:
+                raise ValueError("lat, lon tuple expected")
+        attrvalue = AttrValue(value, datasetid, observedat)
+        p = AttrGeoValue.build(attrvalue)
+        return {attrname: p} if attrname else p
 
-    def _build_temporal_property(self, value: Union[NgsiDate, type[Auto]]) -> NgsiDict:
-        property: NgsiDict = NgsiDict()
-        property["type"] = AttrType.TEMPORAL.value  # set type
+    @classmethod
+    def mktprop(
+        cls,
+        value: NgsiDate = iso8601.utcnow(),
+        *,  # keyword-only arguments after this
+        attrname: str = None,
+    ) -> AttrTemporalValue:
+        from ngsildclient.model.attr.temporal import AttrTemporalValue
 
-        if value is Auto:
-            value = self._dateauto()
+        attrvalue = AttrValue(value)
+        p = AttrTemporalValue.build(attrvalue)
+        return {attrname: p} if attrname else p
 
-        date_str, temporaltype, dt = iso8601.parse(value)
-        v = {
-            "@type": temporaltype.value,
-            "@value": date_str,
-        }
-        property["value"] = v  # set value
-        self._cachedate(dt)
-        return property
-
-    def tprop(self, name: str, value: str, **kwargs):
-        self[name] = self._build_temporal_property(value, **kwargs)
-        return self[name]
-
-    def _build_relationship(
-        self,
-        value: Union[str, List[str]],
-        observedat: Union[str, datetime, type[Auto]] = None,
+    @classmethod
+    def mkrel(
+        cls,
+        value: Union[str, List[str], Entity, List[Entity]],
+        *,  # keyword-only arguments after this
         datasetid: str = None,
-        userdata: NgsiDict = None,
-    ) -> NgsiDict:
-        property: NgsiDict = NgsiDict()
-        property["type"] = AttrType.REL.value  # set types
-        property["object"] = Urn.prefix(value.id) if isinstance(value, entity.Entity) else Urn.prefix(value)
-        if observedat is not None:
-            property[META_ATTR_OBSERVED_AT] = self._process_observedat(observedat)
-        if datasetid is not None:
-            property[META_ATTR_DATASET_ID] = Urn.prefix(datasetid)
-            if userdata:
-                property |= userdata
-        return property
+        observedat: Union[str, datetime] = None,
+        attrname: str = None,
+    ) -> AttrRelValue:
+        from ngsildclient.model.attr.rel import AttrRelValue
 
-    def _m_build_relationship(
-        # Multiple Relationship limitation : no metadata
-        self,
-        value: List[str],
-        observedat: Union[str, datetime, type[Auto]] = None,
-        datasetid: str = None,
-        userdata: NgsiDict = None,
-    ) -> NgsiDict:
-        property: List[NgsiDict] = []
-        if isinstance(observedat, List):
-            if len(observedat) != len(value):
-                raise ValueError("Missing observedAt attributes")
+        if isinstance(value, MultAttrValue):
+            if len(value) == 0:
+                raise ValueError("MultAttr is empty")
+            p: List[AttrRelValue] = [AttrRelValue.build(v.id if hasattr(v, "id") else v) for v in value]
         else:
-            observedat = [observedat] * len(value)
-        if isinstance(datasetid, List):
-            if len(datasetid) != len(value):
-                raise ValueError("Missing datasetId attributes")
-        else:
-            datasetid = [datasetid] * len(value)
-        if isinstance(userdata, List):
-            if len(userdata) != len(value):
-                raise ValueError("Missing userdata attributes")
-        else:
-            userdata = [userdata] * len(value)
-        for x in zip(value, observedat, datasetid, userdata):
-            property.append(self._build_relationship(*x))
-        return property
-
-    def rel(self, name: str, value: str, **kwargs):
-        if isinstance(name, Rel):
-            name = name.value
-        self[name] = self._build_relationship(value, **kwargs)
-        return self[name]
+            value = value.id if hasattr(value, "id") else value
+            attrvalue = AttrValue(value, datasetid, observedat)
+            p = AttrRelValue.build(attrvalue)
+        return {attrname: p} if attrname else p

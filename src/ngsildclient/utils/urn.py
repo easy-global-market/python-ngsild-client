@@ -21,7 +21,7 @@ References
 import re
 import logging
 
-from typing import overload, Optional
+from typing import overload, Optional, Tuple
 
 NID_PATTERN = re.compile(r"^[0-9a-zA-Z\-]+$")
 """Regex pattern that matches a valid namespace identifier (`regex.Pattern`).
@@ -48,8 +48,6 @@ class Urn:
     """Helper class to handle NGSI-LD urn/uri and allow to work with unprefixed strings."""
 
     DEFAULT_NID = "ngsi-ld"
-    # """Default NGSI-LD namespace value
-    # """
 
     @overload
     def __init__(self, fqn: str) -> None:
@@ -75,9 +73,7 @@ class Urn:
         """
         ...
 
-    def __init__(
-        self, fqn: str = None, *, nss: str = None, nid: str = DEFAULT_NID
-    ) -> None:
+    def __init__(self, fqn: str = None, *, nss: str = None, nid: str = DEFAULT_NID) -> None:
         self.scheme = "urn"
         if nss and nid:
             self.nss = nss
@@ -101,8 +97,8 @@ class Urn:
         str
             the fully qualified name
 
-        Examples
-        --------
+        Example
+        -------
         >>> from ngsildclient.utils.urn import Urn
         >>> urn = Urn(nss="AirQualityObserved:RZ:Obsv4567")
         >>> print(urn.fqn)
@@ -145,8 +141,8 @@ class Urn:
         bool
             True if if the nid is valid
 
-        Examples
-        --------
+        Example
+        -------
         >>> from ngsildclient.utils.urn import Urn
         >>> print(Urn.is_valid_nid("ngsi-ld"))
         True
@@ -170,8 +166,8 @@ class Urn:
         bool
             True if the string value starts with the NGSI-LD u`urn:ngsi-ld:`
 
-        Examples
-        --------
+        Example
+        -------
         >>> from ngsildclient.utils.urn import Urn
         >>> print(Urn.is_prefixed("urn:ngsi-ld:AirQualityObserved:RZ:Obsv4567"))
         True
@@ -192,8 +188,8 @@ class Urn:
         str
             the string prefixed (if not already prefixed)
 
-        Examples
-        --------
+        Example
+        -------
         >>> from ngsildclient.utils.urn import Urn
         >>> print(Urn.prefix("AirQualityObserved:RZ:Obsv4567"))
         urn:ngsi-ld:AirQualityObserved:RZ:Obsv4567
@@ -216,8 +212,8 @@ class Urn:
         str
             the string without the prefix
 
-        Examples
-        --------
+        Example
+        -------
         >>> from ngsildclient.utils.urn import Urn
         >>> print(Urn.unprefix("urn:ngsi-ld:AirQualityObserved:RZ:Obsv4567"))
         AirQualityObserved:RZ:Obsv4567
@@ -225,3 +221,20 @@ class Urn:
         if value is None:
             return None
         return Urn(value).nss if Urn.is_prefixed(value) else value
+
+    @staticmethod
+    def split(value: str) -> Tuple[str, str]:
+        """Return
+
+        Parameters
+        ----------
+        value : str
+            _description_
+
+        Returns
+        -------
+        Tuple[str, str]
+            the type of the entity, and the entity id
+        """
+        type, shortid = value[12:].split(":", 1)
+        return type, f"{type}:{shortid}"

@@ -13,26 +13,17 @@ import http.client
 import logging
 import sys
 
-__version__ = "0.1.10"
+__version__ = "0.5.2"
 
+from ngsildclient.settings import globalsettings as settings
 from .utils import iso8601, is_interactive
 from .utils.uuid import shortuuid
-from .model.entity import Entity
+from .model.entity import Entity, mkprop, mktprop, mkgprop, mkrel
 from .model.helper.postal import PostalAddressBuilder
 from .model.helper.openinghours import OpeningHoursBuilder
-from .model.constants import (
-    CORE_CONTEXT,
-    NESTED,
-    Auto,
-    SmartDataModels,
-    Rel,
-    TZ_UTC,
-    TZ_WET,
-    TZ_CET,
-    TZ_FET,
-)
-from .model.mock import MockerNgsi
+from .model.constants import CORE_CONTEXT, SmartDataModels, Rel, UTC, MultAttrValue
 from .api.client import Client
+from .api.asyn.client import AsyncClient
 from .api.helper.subscription import SubscriptionBuilder
 from .exceptions import NgsiError
 from .model.exceptions import NgsiModelError
@@ -40,21 +31,23 @@ from .api.exceptions import NgsiApiError, NgsiContextBrokerError, NgsiAlreadyExi
 
 
 __all__ = [
+    "settings",
     "iso8601",
     "shortuuid",
+    "mkprop",
+    "mkgprop",
+    "mktprop",
+    "mkrel",
     "Entity",
+    "AttrValue",
     "PostalAddressBuilder",
     "OpeningHoursBuilder",
     "CORE_CONTEXT",
-    "NESTED",
-    "Auto",
     "Rel",
-    "TZ_UTC",
-    "TZ_WET",
-    "TZ_CET",
-    "TZ_FET",
-    "MockerNgsi",
+    "UTC",
+    "MultAttrValue",
     "Client",
+    "AsyncClient",
     "SubscriptionBuilder",
     "SmartDataModels",
     "NgsiError",
@@ -64,9 +57,7 @@ __all__ = [
     "NgsiAlreadyExistsError",
 ]
 
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
-)
+logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 if is_interactive():
     logging.disable(logging.CRITICAL)
     sys.tracebacklimit = 0

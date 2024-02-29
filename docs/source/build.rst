@@ -3,7 +3,7 @@ Build Entities
 
 This chapter explains how to build NGSI-LD compliant entities.
 
-:ref:`Annex<Realistic Examples>` shows realistic examples - taken from the `Smart Data Models Initiative`_ - built with **ngsildclient**.
+:ref:`Cookbook<how to forge ngsi-ld entities>` shows realistic examples - taken from the `Smart Data Models Initiative`_ - built with **ngsildclient**.
 
 Create an entity
 ----------------
@@ -211,9 +211,10 @@ observedAt
 .. code-block::
   :caption: SO2 concentration with the observation date
 
-   from datetime import datetime, timezone
+   from datetime import datetime
+   from dateutil.tz import UTC
 
-   entity.prop("SO2", 11, observedat=datetime(2016, 3, 15, 11, tzinfo=timezone.utc))
+   entity.prop("SO2", 11, observedat=datetime(2016, 3, 15, 11, tzinfo=UTC))
 
    # Alternatively one could pass directly an ISO8601 string
    # entity.prop("SO2", 11, observedat="2016-03-15T11:00:00Z")
@@ -872,9 +873,10 @@ Note that this is not needed for the **tprop()** primitive and **observedat** ar
    :caption: ISO8601 Example
 
    from datetime import datetime
-   from ngsildclient import iso8601, TZ_CET
+   from dateutil import tz
+   from ngsildclient import iso8601
 
-   dt = datetime(2022, 3, 10, 17, 49, tzinfo=TZ_CET)
+   dt = datetime(2022, 3, 10, 17, 49, tzinfo=tz.gettz("Europe/Paris"))
    iso8601.from_datetime(dt) # '2022-03-10T16:49:00Z'
 
 Short UUID
@@ -891,7 +893,6 @@ The dash character (often used as a NGSI field separator) is replaced by the til
 
    from ngsildclient import Entity, shortuuid
 
-   dt = datetime(2022, 3, 10, 17, 49, tzinfo=TZ_CET)
    crop = Entity("AgriCrop", shortuuid())
 
 .. code-block:: json-ld

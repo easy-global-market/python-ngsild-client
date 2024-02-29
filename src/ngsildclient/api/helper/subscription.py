@@ -10,7 +10,9 @@
 # Author: Fabien BATTELLO <fabien.battello@orange.com> et al.
 
 from dataclasses import dataclass
-from ...model.constants import CORE_CONTEXT
+
+import ngsildclient.utils.url as url
+from ngsildclient.model.constants import CORE_CONTEXT
 
 
 @dataclass
@@ -126,7 +128,7 @@ class SubscriptionBuilder:
     def query(self, value: str):
         if not isinstance(value, str):
             raise ValueError("query shall be a string")
-        self._subscr.query = value
+        self._subscr.query = url.escape(value)
         return self
 
     def notif(self, value: list[str]):
@@ -145,7 +147,5 @@ class SubscriptionBuilder:
 
     def build(self) -> dict:
         if self._subscr.entities == [] and self._subscr.watched_attrs is None:
-            raise ValueError(
-                "At least one of (a) entities or (b) watchedAttributes shall be present."
-            )
+            raise ValueError("At least one of (a) entities or (b) watchedAttributes shall be present.")
         return self._subscr.to_dict()

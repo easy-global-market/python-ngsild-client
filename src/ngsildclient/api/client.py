@@ -9,22 +9,37 @@
 #
 # Author: Fabien BATTELLO <fabien.battello@orange.com> et al.
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Optional, Tuple, Generator, List, Union, Callable, Set
+
+if TYPE_CHECKING:
+    from ngsildclient.model.constants import EntityOrId
+
 import logging
 import requests
 from requests.auth import AuthBase
 from dataclasses import dataclass
 from typing import Optional, Tuple, Generator, List, Union, overload
 from math import ceil, floor
+import networkx as nx
 
+from ngsildclient import __version__ as __version__
 from ..utils import is_interactive
-from ..model.entity import Entity
+from ..utils.urn import Urn
+from ngsildclient import Entity
 from .constants import *
 from .entities import Entities
-from .batch import BatchOp
+from .batch import Batch, BatchResult
 from .types import Types
 from .contexts import Contexts
 from .subscriptions import Subscriptions
+from .temporal import Temporal
+from .alt import Alt
+from .follow import LinkFollower
 from .exceptions import *
+from ngsildclient.settings import globalsettings
+from ngsildclient.utils.console import Console, MsgLvl
 
 logger = logging.getLogger(__name__)
 
@@ -57,8 +72,8 @@ class Client:
     When encountering errors the Client throws enriched
     Exceptions, as NGSI-LD API supports ProblemDetails [IETF RFC 7807].
 
-    Example:
-    --------
+    Example
+    -------
     >>> from ngsildclient import *
 
     >>> # Here we don't build our own NGSI-LD entity, but grab an example from SmartDatamodels
@@ -77,13 +92,16 @@ class Client:
         self,
         hostname: str = "localhost",
         port: int = NGSILD_DEFAULT_PORT,
+        port_temporal: Optional[int] = None,
         secure: bool = False,
         useragent: str = UA,
         tenant: str = None,
+        tenant_autocreate: bool = True,
         overwrite: bool = False,
         ignore_errors: bool = False,
         proxy: str = None,
-        custom_auth : AuthBase = None
+        custom_auth: AuthBase = None,
+        verbose: bool = True,
     ):
         """Create a Client instance to interact with the Context Broker.
 
@@ -105,10 +123,12 @@ class Client:
             the User Agent string sent in the HTTP headers, by default UA
         tenant : str, optional
             the tenant string in case you make use of multi-tenancy, by default None
+        tenant_autocreate : boolean, optional
+            creates the tenant if not exists, default is True
         overwrite : bool, optional
             if set create() will behave like upsert(), by default False
         ignore_errors : bool, optional
-            if set tests the connection at init time and raisesan exception if failed, by default False
+            if set tests the connection at init time and raises an exception if failed, by default False
         proxy : str, optional
             proxies all requests to the provided proxy string (for debugging purpose), by default None
 
@@ -119,15 +139,20 @@ class Client:
         """
         self.hostname = hostname
         self.port = port
+        if port_temporal is None:
+            port_temporal = port
+        self.port_temporal = port_temporal
         self.secure = secure
         self.scheme = "https" if secure else "http"
         self.url = f"{self.scheme}://{hostname}:{port}"
         self.basepath = f"{self.url}/{NGSILD_PATH}"
         self.useragent = useragent
         self.tenant = tenant
+        self.tenant_autocreate = tenant_autocreate
         self.overwrite = overwrite
         self.ignore_errors = ignore_errors
         self.proxy = proxy
+        self.url_temporal = f"{self.scheme}://{hostname}:{port_temporal}"
 
         self.session = requests.Session()
         if (custom_auth):
@@ -142,25 +167,35 @@ class Client:
         if proxy:
             self.session.proxies = {proxy}
 
-        logger.info("Connecting client ...")
+        self.verbose = verbose
+        self.console = Console(verbose)
 
-        self._entities = Entities(self, f"{self.url}/{ENDPOINT_ENTITIES}")
-        self._batch = BatchOp(self, f"{self.url}/{ENDPOINT_BATCH}")
+        self._entities = Entities(self, f"{self.url}/{ENDPOINT_ENTITIES}", f"{self.url}/{ENDPOINT_ALT_QUERY_ENTITIES}")
+        self._batch = Batch(self, f"{self.url}/{ENDPOINT_BATCH}")
         self._types = Types(self, f"{self.url}/{ENDPOINT_TYPES}")
         self._contexts = Contexts(self, f"{self.url}/{ENDPOINT_CONTEXTS}")
         self._subscriptions = Subscriptions(self, f"{self.url}/{ENDPOINT_SUBSCRIPTIONS}")
 
+        if port_temporal == port:  # temporal endpoint mounted at /ngsi-ld/v1
+            self._temporal = Temporal(
+                self,
+                f"{self.url_temporal}/{NGSILD_BASEPATH}/{ENDPOINT_TEMPORAL}",
+                f"{self.url_temporal}/{NGSILD_BASEPATH}/{ENDPOINT_ALT_QUERY_TEMPORAL}",
+            )
+        else:  # temporal endpoint mounted at /
+            self._temporal = Temporal(
+                self, f"{self.url_temporal}/{ENDPOINT_TEMPORAL}", f"{self.url_temporal}/{ENDPOINT_ALT_QUERY_TEMPORAL}"
+            )
+        self._alt = Alt(self)
         self.broker = Broker(Vendor.UNKNOWN, "N/A")
 
         # get status and retrieve Context Broker information
         status = self.is_connected(raise_for_disconnected=True)
         if status:
             self.broker = Broker(*self.guess_vendor())
-            if is_interactive():
-                print(self._welcome_message())
+            self.console.print(self._welcome_message())
         else:
-            if is_interactive():
-                print(self._fail_message())
+            self.console.print(self._fail_message())
 
     def raise_for_status(self, r: Response):
         """Raises an exception depending on the API response.
@@ -203,10 +238,16 @@ class Client:
                 },  # overrides session headers
                 params=params,
             )
+
+            if not r.ok and self.tenant and self.tenant_autocreate:
+                r = self.create_tenant(self.tenant)
+
             r.raise_for_status()
+
         except Exception as e:
             if is_interactive():
-                return False
+                self.console.print(str(e))
+                return
             if raise_for_disconnected:
                 raise NgsiNotConnectedError(f"Cannot connect to Context Broker at {self.hostname}:{self.port}: {e}")
             else:
@@ -238,6 +279,14 @@ class Client:
     def subscriptions(self):
         return self._subscriptions
 
+    @property
+    def temporal(self):
+        return self._temporal
+
+    @property
+    def alt(self):
+        return self._alt
+
     def close(self):
         """Terminates the client.
 
@@ -245,65 +294,33 @@ class Client:
         """
         self.session.close()
 
-    @overload
-    def create(self, entity: Entity, skip: bool = False, overwrite: bool = False) -> Entity:
-        """Create an entity.
+    def create(self, *entities) -> Union[bool, BatchResult]:
+        """Create one or many entities.
 
-        Facade method for Entities.create().
+        Facade method backed by Batch.create() or Entities.create()
 
         Parameters
         ----------
-        entity : Entity
-            the entity to be created by the Context Broker
-        skip : bool, optional
-            if set, skips creation (do nothing) if already exists, by default False
-        overwrite : bool, optional
-            if set, force upsert the entity if already exists, by default False
+        entities :
+            Entities to be created by the Context Broker
+            Either a single Entity, or a list of entities, or comma-separated entities
 
         Returns
         -------
         Entity
-            the entity succesfully created
+            The entities successfully upserted
         """
-        ...
-
-    @overload
-    def create(self, entities: List[Entity], skip: bool = False, overwrite: bool = False):
-        """Create a batch of entities.
-
-        Facade method for Batch.create().
-
-        Parameters
-        ----------
-        entities : List[Entity]
-            the entity to be created by the Context Broker
-        skip : bool, optional
-            if set, skips creation (do nothing) if already exists, by default False
-        overwrite : bool, optional
-            if set, force upsert the entity if already exists, by default False
-
-        Returns
-        -------
-        BatchOperationResult
-            TODO
-        """
-        ...
-
-    def create(
-        self,
-        _entities: Union[Entity, List[Entity]],
-        skip: bool = False,
-        overwrite: bool = False,
-    ) -> Optional[Entity]:
-        if isinstance(_entities, Entity):
-            entity = _entities
-            return self.entities.create(entity, skip, overwrite)
-        else:
-            return self.batch.create(_entities, skip, overwrite)
+        if len(entities) == 1:
+            if isinstance(entities[0], Entity):
+                entity = entities[0]
+                return self.entities.create(entity)
+            else:
+                entities = entities[0]
+        return self.batch.create(entities)
 
     def get(
         self,
-        eid: Union[EntityId, Entity],
+        entity: EntityOrId,
         ctx: str = None,
         asdict: bool = False,
         **kwargs,
@@ -315,7 +332,7 @@ class Client:
 
         Parameters
         ----------
-        eid : Union[EntityId, Entity]
+        entity : EntityOrId
             The entity identifier or the entity instance
         ctx : str
             The context
@@ -327,54 +344,33 @@ class Client:
         Entity
             The retrieved entity
         """
-        return self.entities.get(eid, ctx, asdict, **kwargs)
+        return self.entities.get(entity, ctx, asdict, **kwargs)
 
-    @overload
-    def delete(self, eid: Union[EntityId, Entity]) -> bool:
-        """Delete an entity given its id.
+    def delete(self, *entities) -> Union[bool, BatchResult]:
+        """Delete one or many entities.
 
-        Facade method for Entities.delete().
-        If already dealing with an entity instance one can provide the entity itself instead of its id.
+        Facade method backed by Batch.delete() or Entities.delete()
 
         Parameters
         ----------
-        eid : Union[EntityId, Entity]
-            The entity identifier or the entity instance
+        entities :
+            Entities to be deleted by the Context Broker
+            Either a single Entity, or a list of entities, or comma-separated entities
 
         Returns
         -------
-        bool
-            True if the entity has been succefully deleted
+        Entity
+            The entities successfully upserted
         """
-        ...
+        if len(entities) == 1:
+            if isinstance(entities[0], Entity):
+                entity = entities[0]
+                return self.entities.delete(entity)
+            else:
+                entities = entities[0]
+        return self.batch.delete(entities)
 
-    @overload
-    def delete(self, eids: List[Union[EntityId, Entity]]) -> bool:
-        """Delete entities given its id.
-
-        Facade method for Batch.delete().
-        If already dealing with entity instances one can provide the entities instead of ids.
-
-        Parameters
-        ----------
-        eids : List[Union[EntityId, Entity]]
-            The entities ids or instances
-
-        Returns
-        -------
-        bool
-            True if the entity has been succefully deleted
-        """
-        ...
-
-    def delete(self, eids: Union[Union[EntityId, Entity], List[Union[EntityId, Entity]]]) -> bool:
-        if isinstance(eids, list):
-            return self.batch.delete(eids)
-        else:
-            eid = eids
-            return self.entities.delete(eid)
-
-    def delete_from_file(self, filename: str) -> Union[Entity, dict]:
+    def delete_from_file(self, filename: str) -> Union[bool, BatchResult]:
         """Delete in the broker all entities present in the JSON file.
 
         Parameters
@@ -385,7 +381,7 @@ class Client:
         entities = Entity.load(filename)
         return self.delete(entities)
 
-    def exists(self, eid: Union[EntityId, Entity]) -> bool:
+    def exists(self, entity: EntityOrId) -> bool:
         """Tests if an entity exists.
 
         Facade method for Entities.exists().
@@ -393,7 +389,7 @@ class Client:
 
         Parameters
         ----------
-        eid : Union[EntityId, Entity]
+        entity : EntityOrId
             The entity identifier or the entity instance
 
         Returns
@@ -401,52 +397,38 @@ class Client:
         bool
             True if the entity exists
         """
-        return self.entities.exists(eid)
+        return self.entities.exists(entity)
 
-    @overload
-    def upsert(self, entity: Entity) -> Entity:
-        """Upsert the entity or update it if already exists.
+    def upsert(self, *entities, update: bool = False) -> Union[bool, BatchResult]:
+        """Upsert one or many entities.
 
-        Facade method for Entities.upsert().
-
-        Parameters
-        ----------
-        entity : Entity
-            The entity to be upserted by the Context Broker
-
-        Returns
-        -------
-        Entity
-            The entity successfully upserted
-        """
-        ...
-
-    @overload
-    def upsert(self, entities: List[Entity]) -> dict:
-        """Upsert a batch of entities.
-
-        Facade method for Batch.upsert().
+        Facade method backed by Batch.upsert() or Entities.upsert()
 
         Parameters
         ----------
-        entity : Entity
-            The entity to be upserted by the Context Broker
+        entities :
+            Entities to be upserted by the Context Broker
+            Either a single Entity, or a list of entities, or comma-separated entities
+
+        update: bool
+            For batch mode only.
+            If set : "indicates that existing Entity content shall be updated".
+            If not set : "indicates that all the existing Entity content shall be replaced (default mode)".
 
         Returns
         -------
         Entity
             The entities successfully upserted
         """
-        ...
+        if len(entities) == 1:
+            if isinstance(entities[0], Entity):
+                entity = entities[0]
+                return self.entities.upsert(entity)
+            else:
+                entities = entities[0]
+        return self.batch.upsert(entities, update=update)
 
-    def upsert(self, entities: Union[Entity, List[Entity]]) -> Union[Entity, dict]:
-        if isinstance(entities, Entity):
-            entity = entities
-            return self.entities.upsert(entity)
-        else:
-            return self.batch.upsert(entities)
-
-    def bulk_import(self, filename: str) -> Union[Entity, dict]:
+    def bulk_import(self, filename: str) -> Union[bool, dict]:
         """Upsert all entities from a JSON file.
 
         Parameters
@@ -457,54 +439,40 @@ class Client:
         entities = Entity.load(filename)
         return self.upsert(entities)
 
-    @overload
-    def update(self, entity: Entity) -> Optional[Entity]:
-        """Update the entity.
+    def update(self, *entities, overwrite=True) -> Union[bool, BatchResult]:
+        """Upsert one or many entities.
 
-        Facade method for Entities.update().
-
-        Parameters
-        ----------
-        entity : Entity
-            The entity to be updated by the Context Broker
-
-        Returns
-        -------
-        Optional[Entity]
-            The entity successfully updated (or None if not found)
-        """
-        return self.entities.update(entity)
-
-    @overload
-    def update(self, entities: List[Entity]) -> dict:
-        """Update a batch of entities.
-
-        Facade method for Batch.update().
+        Facade method backed by Batch.update() or Entities.update()
 
         Parameters
         ----------
-        entities : List[Entity]
-            The entities to be updated by the Context Broker
+        entities :
+            Entities to be upserted by the Context Broker
+            Either a single Entity, or a list of entities, or comma-separated entities
+
+        overwrite: bool
+            For batch mode only.
+            If set : Overwrite (default mode).
+            If unset switch to "noOverwrite" mode : "indicates that no attribute overwrite shall be performed".
 
         Returns
         -------
-        Optional[Entity]
-            The entity successfully updated (or None if not found)
+        Entity
+            The entities successfully updated
         """
-        ...
+        if len(entities) == 1:
+            if isinstance(entities[0], Entity):
+                entity = entities[0]
+                return self.entities.update(entity)
+            else:
+                entities = entities[0]
+        return self.batch.update(entities, overwrite=overwrite)
 
-    def update(self, entities: Union[Entity, List[Entity]]) -> Union[Optional[Entity], dict]:
-        if isinstance(entities, Entity):
-            entity = entities
-            return self.entities.update(entity)
-        else:
-            return self.batch.update(entities)
-
-    def query_head(self, type: str = None, q: str = None, ctx: str = None, n: int = 5, **kwargs) -> List[Entity]:
+    def query_head(self, type: str = None, q: str = None, gq: str = None, ctx: str = None, n: int = 5) -> List[Entity]:
         """Retrieve entities given its type and/or query string.
 
         Retrieve up to PAGINATION_LIMIT_MAX entities.
-        Use query_all() to retrieve all entities.
+        Use query() to retrieve all entities.
         Use entities.query() to deal with limit and offset on your own.
 
         Parameters
@@ -513,6 +481,8 @@ class Client:
             The entity's type
         q: str
             The query string (NGSI-LD Query Language)
+        gq: str
+            The geoquery string (NGSI-LD Geoquery Language)
         ctx: str
             The context
         n: int
@@ -522,24 +492,24 @@ class Client:
         list[Entity]
             Retrieved entities matching the given type and/or query string
 
-        Example:
-        --------
+        Example
+        -------
         >>> with Client() as client:
         >>>     client.query(type="AgriFarm") # match a given type
 
         >>> with Client() as client:
         >>>     client.query(type="AgriFarm", q='contactPoint[email]=="wheatfarm@email.com"') # match type and query
         """
-        return self.entities.query(type, q, ctx, limit=n)
+        return self.entities._query(type, q, gq, ctx, limit=n)
 
-    def query_all(
+    def query(
         self,
         type: str = None,
         q: str = None,
+        gq: str = None,
         ctx: str = None,
         limit: int = PAGINATION_LIMIT_MAX,
         max: int = 1_000_000,
-        **kwargs,
     ) -> List[Entity]:
         """Retrieve entities given its type and/or query string.
 
@@ -552,6 +522,8 @@ class Client:
             The entity's type
         q: str
             The query string (NGSI-LD Query Language)
+        gq: str
+            The geoquery string (NGSI-LD Geoquery Language)
         ctx: str
             The context
         limit: int
@@ -562,41 +534,104 @@ class Client:
         list[Entity]
             Retrieved entities matching the given type and/or query string
 
-        Example:
-        --------
+        Example
+        -------
         >>> with Client() as client:
-        >>>     client.query_all(type="AgriFarm") # match a given type
+        >>>     client.query(type="AgriFarm") # match a given type
 
         >>> with Client() as client:
-        >>>     client.query_all(type="AgriFarm", q='contactPoint[email]=="wheatfarm@email.com"') # match type and query
+        >>>     client.query(type="AgriFarm", q='contactPoint[email]=="wheatfarm@email.com"') # match type and query
         """
 
         entities: list[Entity] = []
-        count = self.entities.count(type, q, ctx=ctx)
+        count = self.entities.count(type, q, gq, ctx=ctx)
         if count > max:
             raise NgsiClientTooManyResultsError(f"{count} results exceed maximum {max}")
         for page in range(ceil(count / limit)):
-            entities.extend(self.entities.query(type, q, ctx, limit, page * limit))
+            entities.extend(self.entities._query(type, q, gq, ctx, limit, page * limit))
         return entities
 
     def query_generator(
         self,
         type: str = None,
         q: str = None,
+        gq: str = None,
         ctx: str = None,
         limit: int = PAGINATION_LIMIT_MAX,
         batch: bool = False,
-        **kwargs,
     ) -> Generator[Entity, None, None]:
+        """Retrieve (as a generator) entities given its type and/or query string.
+
+        By returning a generator it allows to process entities on the fly without any risk of exhausting memory.
+
+        Parameters
+        ----------
+        etype : str
+            The entity's type
+        q: str
+            The query string (NGSI-LD Query Language)
+        gq: str
+            The geoquery string (NGSI-LD Geoquery Language)
+        ctx: str
+            The context
+        limit: int
+            The number of entities retrieved in each request
+
+        Returns
+        -------
+        list[Entity]
+            Retrieved a generator of entities (matching the given type and/or query string)
+
+        Example
+        -------
+        >>> with Client() as client:
+        >>>     for entity in client.query_handle(type="AgriFarm"):
+                    print(entity)
+        """
         count = self.entities.count(type, q, ctx=ctx)
         start_page = floor(kwargs.get("skip",0)/limit)
         for page in range(start_page, ceil(count / limit)):
             if batch:
-                yield self.entities.query(type, q, ctx, limit, page * limit)
+                yield self.entities._query(type, q, gq, ctx, limit, page * limit)
             else:
-                yield from self.entities.query(type, q, ctx, limit, page * limit)
+                yield from self.entities._query(type, q, gq, ctx, limit, page * limit)
 
-    def count(self, type: str = None, q: str = None, **kwargs) -> int:
+    def query_handle(
+        self,
+        type: str = None,
+        q: str = None,
+        gq: str = None,
+        ctx: str = None,
+        limit: int = PAGINATION_LIMIT_MAX,
+        *,
+        callback: Callable[[Entity], None],
+    ) -> None:
+        """Apply a callback function on entity of the query result.
+
+        Parameters
+        ----------
+        etype : str
+            The entity's type
+        q: str
+            The query string (NGSI-LD Query Language)
+        gq: str
+            The geoquery string (NGSI-LD Geoquery Language)
+        ctx: str
+            The context
+        limit: int
+            The number of entities retrieved in each request
+        callback: Callable[Entity]
+            The function to be called on each entity of the result
+
+        Example
+        -------
+        >>> with Client() as client:
+        >>>     client.query_handle(type="AgriFarm", lambda e: print(e))
+        """
+        for entity in self.query_generator(type, q, gq, ctx, limit, False):
+            callback(entity)
+
+    def count(self, type: str = None, q: str = None, gq: str = None) -> int:
         """Return number of entities matching type and/or query string.
 
         Facade method for Entities.count().
@@ -605,44 +640,48 @@ class Client:
         ----------
         etype : str
             The entity's type
-        query: str
+        q: str
             The query string (NGSI-LD Query Language)
+        gq: str
+            The geoquery string (NGSI-LD Geoquery Language)
 
         Returns
         -------
         int
             The number of matching entities
 
-        Example:
-        --------
+        Example
+        -------
         >>> with Client() as client:
         >>>     client.count(type="AgriFarm") # match a given type
 
         >>> with Client() as client:
         >>>     client.count(type="AgriFarm", query='contactPoint[email]=="wheatfarm@email.com"') # match type and query
         """
-        return self.entities.count(type, q)
+        return self.entities.count(type, q, gq)
 
-    def delete_where(self, type: str = None, q: str = None, **kwargs):
+    def delete_where(self, type: str = None, q: str = None, gq: str = None):
         """Batch delete entities matching type and/or query string.
 
         Parameters
         ----------
         etype : str
             The entity's type
-        query: str
+        q: str
             The query string (NGSI-LD Query Language)
+        gq: str
+            The geoquery string (NGSI-LD Geoquery Language)
 
-        Example:
-        --------
+        Example
+        -------
         >>> with Client() as client:
         >>>     client.delete_where(type="AgriFarm", query='contactPoint[email]=="wheatfarm@email.com"') # match type and query
         """
-        g = self.query_generator(type, q, batch=True, **kwargs)
+        g = self.query_generator(type, q, gq, batch=True)
         for batch in g:
             self.batch.delete(batch)
 
-    def drop(self, type: str) -> None:
+    def drop(self, *types: str) -> None:
         """Batch delete entities matching the given type.
 
         Parameters
@@ -650,21 +689,19 @@ class Client:
         type : str
             The entity's type
 
-        Example:
-        --------
+        Example
+        -------
         >>> with Client() as client:
         >>>     client.drop("AgriFarm")
         """
-        self.delete_where(type=type)
-
-    def list_types(self) -> Optional[dict]:
-        return self.types.list()
+        for t in types:
+            self.delete_where(type=t)
 
     def purge(self) -> None:
         """Batch delete all entities.
 
-        Example:
-        --------
+        Example
+        -------
         >>> with Client() as client:
         >>>     client.purge()
         """
@@ -674,13 +711,23 @@ class Client:
     def flush_all(self) -> None:
         """Batch delete all entities and remove all contexts.
 
-        Example:
-        --------
+        Example
+        -------
         >>> with Client() as client:
         >>>     client.purge()
         """
         self.purge(type)
         self.contexts.cleanup()
+
+    def create_tenant(self, tenant: str) -> Response:
+        payload = {
+            "id": f"urn:ngsi-ld:__NGSILD-Tenant__:{tenant}",
+            "type": "__NGSILD-Tenant__",
+            "@context": ["https://uri.etsi.org/ngsi-ld/v1/ngsi-ld-core-context.jsonld"],
+        }
+        return self.session.post(
+            f"{self.url}/{ENDPOINT_BATCH}/upsert/", json=[payload], headers={"NGSILD-Tenant": tenant}
+        )
 
     def guess_vendor(self) -> tuple[Vendor, Version]:
         """Try to guess the Context Broker vendor.
@@ -692,8 +739,8 @@ class Client:
         tuple[Vendor, Version]
             A tuple composed of the Vendor (if identified) and the version.
 
-        Example:
-        --------
+        Example
+        -------
         >>> with Client() as client:
         >>>     print(client.guess_vendor())
         (<Vendor.ORIONLD: 'Orion-LD'>, 'post-v0.8.1')
@@ -760,18 +807,52 @@ class Client:
                 return None
             return vendor, version
         except Exception:
-            if is_interactive():
-                print("Java-Spring based Context Broker detected. Try to enable info endpoint.")
+            self.console.print("Java-Spring based Context Broker detected. [orange]Try to enable info endpoint.")
             return None
 
     def _welcome_message(self) -> str:
-        return f"Connected to Context Broker at {self.hostname}:{self.port} | vendor={self.broker.vendor.value} | version={self.broker.version}"
+        tenant = self.tenant if self.tenant else "N/A"
+        return f"[green]Connected[/] to Context Broker at [blue3]{self.hostname}:{self.port}[/] | tenant=[blue3]{tenant}[/] | vendor=[blue3]{self.broker.vendor.value}[/] | version=[blue3]{self.broker.version}[/]"
 
     def _fail_message(self) -> str:
-        return f"Failed to connect to Context Broker at {self.hostname}:{self.port}"
+        tenant = self.tenant if self.tenant else "N/A"
+        return f"[red3]Failed[/] to connect to Context Broker at [blue3]{self.hostname}:{self.port}[/] | tenant=[blue3]{tenant}[/]"
 
     def _warn_spring_message(self) -> str:
-        return "Java-Spring based Context Broker detected. Info endpoint disabled."
+        return "Java-Spring based Context Broker detected. [orange3]Info endpoint disabled."
+
+    def _create_network(self, root: Entity, G: nx.Graph, nodecache: dict, edgecache: Set):
+        source: Tuple = Urn.split(root.id)
+        for _, nodeid in root.relationships:
+            target: Tuple = Urn.split(nodeid)
+            if (source, target) in edgecache or (target, source) in edgecache:
+                continue
+            edgecache.add((source, target))
+            G.add_edge(source, target)
+            logger.debug(f"cache lookup : {nodeid}")
+            entity = nodecache.get(nodeid)
+            logger.debug(f"{entity=}")
+            if entity is None:  # cache miss
+                try:
+                    entity = self.get(nodeid)
+                    nodecache[nodeid] = entity
+                except NgsiResourceNotFoundError:
+                    pass
+            G = self._create_network(entity, G, nodecache, edgecache)
+        return G
+
+    def network(self, root: Entity):
+        G = nx.Graph()
+        nodecache: dict[str, Entity] = {}  # hash table
+        edgecache: Set[Tuple[str, str]] = set()  # membership testing
+        return self._create_network(root, G, nodecache, edgecache)
+
+    def enable_follow(self):
+        follower = LinkFollower(self)
+        globalsettings.follower = follower
+
+    def disable_follow(self):
+        globalsettings.follower = None
 
     # below the context manager methods
 

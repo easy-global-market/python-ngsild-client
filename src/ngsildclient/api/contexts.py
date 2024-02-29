@@ -12,6 +12,7 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING, Optional
 import re
+import json
 import logging
 
 if TYPE_CHECKING:
@@ -25,6 +26,8 @@ logger = logging.getLogger(__name__)
 
 
 class Contexts:
+    """A wrapper for the NGSI-LD API context endpoint."""
+
     def __init__(self, client: Client, url: str):
         self._client = client
         self._session = client.session
@@ -76,8 +79,14 @@ class Contexts:
                 self.delete(ctx)
 
     @rfc7807_error_handle
-    def add(self, ctx: dict) -> bool:
+    def add(self, ctx: dict):
         if not ctx.get("@context"):
             raise ValueError("Expect a JSON object that has a top-level field named @context.")
         r = self._session.post(f"{self.url}/", json=ctx)
         self._client.raise_for_status(r)
+
+    @rfc7807_error_handle
+    def add_file(self, ctxfilename: str):
+        with open(ctxfilename, "r") as fp:
+            ctx = json.load(fp)
+        self.add(ctx)

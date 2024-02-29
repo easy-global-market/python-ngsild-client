@@ -13,7 +13,19 @@
 """
 
 import sys
+import importlib.util
 
 
 def is_interactive() -> bool:
     return hasattr(sys, "ps1") or sys.flags.interactive
+
+
+def is_pandas_installed() -> bool:
+    return importlib.util.find_spec("pandas") is not None
+
+
+def _addopt(params: dict, newopt: str):
+    if params.get("options", "") == "":
+        params["options"] = newopt
+    else:
+        params["options"] += f",{newopt}"

@@ -304,7 +304,7 @@ Query Head
 Query All
 ^^^^^^^^^
 
-The **query_all()** method returns a list of matching entities.
+The **query()** method returns a list of matching entities.
 
 .. code-block::
    :caption: Print top ten NO2 worst levels
@@ -313,17 +313,31 @@ The **query_all()** method returns a list of matching entities.
    from ngsilclient import Client, Entity
 
    with Client() as client:
-      entities = client.query_all(type="AirQualityObserved", q="NO2>40")
+      entities = client.query(type="AirQualityObserved", q="NO2>40")
       top10 = sorted(entities, reverse=True, key=lambda x: x["NO2.value"])[:10]
       print(top10)
 
 .. note::
-   | The **query_all()** method retrieves at once **ALL** the matching entities *by enabling pagination and sending behind the curtain as many requests as needed*.
+   | The **query()** method retrieves at once **ALL** the matching entities *by enabling pagination and sending under the wood as many requests as needed*.
    | **NgsiClientTooManyResultsError** is raised if more than 1 million entities (configurable thanks to the **max** argument).
 
 .. warning:: 
    | Assume the whole dataset fits in memory.
    | It should not be an issue except for very large datasets.
+
+Query Handle
+^^^^^^^^^^^^
+
+| The **query_handle()** method takes a callback function and applies it to each entity of the query result.
+
+.. code-block::
+   :caption: Print all AirQualityObserved entities
+   :emphasize-lines: 4
+
+   from ngsilclient import Client, Entity
+
+   with Client() as client:
+      client.query_handle(type="AirQualityObserved", lambda x: print(x))
 
 Query Generator
 ^^^^^^^^^^^^^^^
@@ -358,12 +372,6 @@ Query Generator
    | By default it **yields** entities one by one.
    | When the **batch** boolean argument is set it **yields** batch of entities.
    | Batch size is currently defined by the constant **PAGINATION_LIMIT_MAX**.
-
-Low-Level Query
-^^^^^^^^^^^^^^^
-
-| Above query methods are advanced methods that handle pagination for you.
-| If you want to handle pagination by yourself, you can use **client.entities.query()** that basically wraps the API endpoint and allows to specify the **offset** and **limit** arguments.
 
 Count
 ^^^^^
@@ -484,6 +492,34 @@ List available entity types.
    with Client() as client:
       client.list_types()
 
+Temporal Queries
+~~~~~~~~~~~~~~~~
+
+Temporal queries return entities attributes whose value changes over time.
+You have to provide temporal criteria, in addition to criteria already provided to select the entities by themselves ((query and geoquery).
+For example you'd like to retrieve *for the past two hours* the measures of some TemperatureSensor(s).
+The result by default is JSON-formatted as TRoE = Temporal Representation of Entities.
+For convenience it can be returned as a pandas dataframe.
+
+Temporal Query
+^^^^^^^^^^^^^^
+
+The **query()** method returns a list of matching entities along with timeseries data : attributes values over the time.
+
+.. code-block::
+   :emphasize-lines: 4
+
+   from ngsilclient import Client, Entity
+
+   with Client() as client:
+      entities = client.temporal.query(type="TemperatureSensor", attrs=["temperature"])
+
+.. note::
+   | If **attrs** is not specified, all the varying attributes are returned.
+
+.. warning:: 
+   | Assume the whole dataset fits in memory.
+   | It should not be an issue except for very large datasets.
 
 Contexts
 ~~~~~~~~
@@ -882,6 +918,33 @@ Nominal vs Unattended exceptions
 .. note::
    The library provides advanced methods to tackle intricacies of entity creation, such as an ``upsert()`` method.
 
+Asynchronous Client
+-------------------
+
+| Alternatively it's possible to interact with the broker by using ``AsyncClient`` instead of ``Client``.
+
+| The ``AsyncClient`` class provides the same methods but in an asynchronous mode, 
+| allowing better performances by optimizing IO between the broker and your client.
+
+| It's probably a better choice when interactivity is not needed and targetting real-time data exchange.
+
+Example
+~~~~~~~
+
+.. code-block::
+   :emphasize-lines: 5
+
+   from ngsilclient import AsyncClient, Entity
+
+   entity = Entity("AirQualityObserved", "Bordeaux-AirProbe42-2022-03-24T09:00:00Z").prop("NO2", 8)
+   async with AsyncClient() as client:
+      await client.upsert(entity)
+
+Opinionated approach
+--------------------
+
+| The ngsildclient library operates at the Entity level, meaning you interact with a broker by sending and receiving Entities.
+| As a consequence you can't work with the broker at a sublevel, i.e. ask just for an attribute ou update just an attribute.
 
 .. [2] IETF RFC 7807: Problem Details for HTTP APIs
 

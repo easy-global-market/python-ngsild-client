@@ -43,7 +43,7 @@ def test_building():
     e.gprop("containedInPlace", polygon)
     e.prop("dataProvider", "OperatorA").prop("description", "Office block")
     e.prop("floorsAboveGround", 7).prop("floorsBelowGround", 0)
-    e.loc(polygon)
+    e.gprop("location", polygon)
     e.prop("mapUrl", "http://www.example.com")
     e.rel("occupier", "Person:9830f692-7677-11e6-838b-4f9fb3dc5a4f")
     e.prop(
@@ -58,11 +58,10 @@ def test_building():
     e.rel(
         "owner",
         [
-            "cdfd9cb8-ae2b-47cb-a43a-b9767ffd5c84",
-            "1be9cd61-ef59-421f-a326-4b6c84411ad4",
+            "urn:ngsi-ld:cdfd9cb8-ae2b-47cb-a43a-b9767ffd5c84",
+            "urn:ngsi-ld:1be9cd61-ef59-421f-a326-4b6c84411ad4",
         ],
     )
     e.prop("source", "http://www.example.com")
 
     assert e.to_dict() == expected_dict("building")
-    assert e.to_dict(kv=True) == expected_dict("building.kv")
